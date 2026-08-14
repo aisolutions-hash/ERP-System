@@ -1,0 +1,559 @@
+"""Pydantic schemas for request/response validation."""
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+from .models import (
+    DispatchStatus, MovementType, OrderStatus, PlanType, ProductCategory,
+    ProductionStatus, PurchaseStatus, UserRole,
+)
+
+
+class ORMModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ------------------------- Auth -------------------------
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UserOut(ORMModel):
+    id: int
+    username: str
+    email: str
+    full_name: str
+    role: UserRole
+    is_active: bool
+    created_at: datetime
+
+
+class UserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    email: str = Field(max_length=160)
+    full_name: str = Field(default="", max_length=160)
+    password: str = Field(min_length=6, max_length=128)
+    role: UserRole = UserRole.viewer
+
+
+class UserUpdate(BaseModel):
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    password: Optional[str] = Field(default=None, min_length=6, max_length=128)
+    role: Optional[UserRole] = None
+    is_active: Optional[bool] = None
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+
+# ------------------------- Master -------------------------
+class CustomerBase(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    code: str = ""
+    company: str = ""
+    contact_person: str = ""
+    phone: str = ""
+    email: str = ""
+    address: str = ""
+    gstin: str = ""
+    is_plant: bool = False
+    notes: str = ""
+
+
+class CustomerCreate(CustomerBase):
+    pass
+
+
+class CustomerUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    company: Optional[str] = None
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    gstin: Optional[str] = None
+    is_plant: Optional[bool] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class CustomerOut(CustomerBase, ORMModel):
+    id: int
+    is_active: bool
+    created_at: datetime
+
+
+class SupplierBase(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    code: str = ""
+    company: str = ""
+    contact_person: str = ""
+    phone: str = ""
+    email: str = ""
+    address: str = ""
+    gstin: str = ""
+    materials: str = ""
+    notes: str = ""
+
+
+class SupplierCreate(SupplierBase):
+    pass
+
+
+class SupplierUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    company: Optional[str] = None
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    gstin: Optional[str] = None
+    materials: Optional[str] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class SupplierOut(SupplierBase, ORMModel):
+    id: int
+    is_active: bool
+    created_at: datetime
+
+
+class ProductBase(BaseModel):
+    item_code: str = ""
+    model: str = Field(min_length=1, max_length=500)
+    name: str = ""
+    category: ProductCategory = ProductCategory.store
+    uom: str = "Each"
+    min_stock_level: Optional[float] = None
+
+
+class ProductCreate(ProductBase):
+    pass
+
+
+class ProductUpdate(BaseModel):
+    item_code: Optional[str] = None
+    model: Optional[str] = None
+    name: Optional[str] = None
+    category: Optional[ProductCategory] = None
+    uom: Optional[str] = None
+    min_stock_level: Optional[float] = None
+    is_active: Optional[bool] = None
+
+
+class ProductOut(ProductBase, ORMModel):
+    id: int
+    is_active: bool
+    created_at: datetime
+
+
+class PlantBase(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    code: str = ""
+    customer_id: Optional[int] = None
+    description: str = ""
+
+
+class PlantCreate(PlantBase):
+    pass
+
+
+class PlantUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    customer_id: Optional[int] = None
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class PlantOut(PlantBase, ORMModel):
+    id: int
+    is_active: bool
+
+
+# ------------------------- Raw materials -------------------------
+class RawMaterialBalanceOut(ORMModel):
+    id: int
+    product_id: int
+    report_date: date
+    schedule_qty: Optional[float]
+    ask_till_date: Optional[float]
+    inward_qty: Optional[float]
+    completion_pct: Optional[float]
+    balance_qty: Optional[float]
+    opening_stock: Optional[float]
+    notes: str
+    product: Optional[ProductOut] = None
+
+
+# ------------------------- Purchases -------------------------
+class PurchaseOrderLineIn(BaseModel):
+    product_id: Optional[int] = None
+    description: str = ""
+    quantity: float = 0
+    received_qty: float = 0
+    rate: Optional[float] = None
+    amount: Optional[float] = None
+
+
+class PurchaseOrderCreate(BaseModel):
+    po_number: str = Field(min_length=1, max_length=120)
+    supplier_id: Optional[int] = None
+    order_date: date = Field(default_factory=date.today)
+    status: PurchaseStatus = PurchaseStatus.ordered
+    notes: str = ""
+    lines: list[PurchaseOrderLineIn] = []
+
+
+class PurchaseOrderUpdate(BaseModel):
+    supplier_id: Optional[int] = None
+    order_date: Optional[date] = None
+    status: Optional[PurchaseStatus] = None
+    notes: Optional[str] = None
+    lines: Optional[list[PurchaseOrderLineIn]] = None
+
+
+class PurchaseOrderLineOut(ORMModel):
+    id: int
+    product_id: Optional[int]
+    description: str
+    quantity: float
+    received_qty: float
+    rate: Optional[float]
+    amount: Optional[float]
+    product: Optional[ProductOut] = None
+
+
+class PurchaseOrderOut(ORMModel):
+    id: int
+    po_number: str
+    supplier_id: Optional[int]
+    order_date: date
+    status: PurchaseStatus
+    total_amount: float
+    notes: str
+    created_at: datetime
+    supplier: Optional[SupplierOut] = None
+    lines: list[PurchaseOrderLineOut] = []
+
+
+# ------------------------- Inventory -------------------------
+class StockMovementIn(BaseModel):
+    product_id: int
+    plant_id: Optional[int] = None
+    movement_type: MovementType
+    quantity: float
+    transaction_date: date = Field(default_factory=date.today)
+    remarks: str = ""
+
+
+class StockMovementOut(ORMModel):
+    id: int
+    product_id: int
+    plant_id: Optional[int]
+    movement_type: MovementType
+    quantity: float
+    transaction_date: date
+    ref_type: str
+    ref_id: Optional[int]
+    remarks: str
+    created_at: datetime
+    product: Optional[ProductOut] = None
+    plant: Optional[PlantOut] = None
+
+
+class InventoryOut(ORMModel):
+    id: int
+    product_id: int
+    plant_id: Optional[int]
+    opening_stock: float
+    received_qty: float
+    issued_qty: float
+    current_stock: float
+    min_level: Optional[float]
+    product: Optional[ProductOut] = None
+    plant: Optional[PlantOut] = None
+
+
+# ------------------------- Production -------------------------
+class ProductionOrderCreate(BaseModel):
+    product_id: int
+    order_no: Optional[str] = None
+    section: str = ""
+    schedule_qty: float = 0
+    ask_till_date: Optional[float] = None
+    produced_qty: float = 0
+    opening_stock: float = 0
+    status: ProductionStatus = ProductionStatus.planned
+    start_date: Optional[date] = None
+    completion_date: Optional[date] = None
+    report_date: date = Field(default_factory=date.today)
+    remarks: str = ""
+
+
+class ProductionOrderUpdate(BaseModel):
+    product_id: Optional[int] = None
+    section: Optional[str] = None
+    schedule_qty: Optional[float] = None
+    ask_till_date: Optional[float] = None
+    produced_qty: Optional[float] = None
+    opening_stock: Optional[float] = None
+    status: Optional[ProductionStatus] = None
+    start_date: Optional[date] = None
+    completion_date: Optional[date] = None
+    report_date: Optional[date] = None
+    remarks: Optional[str] = None
+
+
+class ProductionMovementOut(ORMModel):
+    id: int
+    production_order_id: int
+    quantity: float
+    production_date: date
+
+
+class ProductionOrderOut(ORMModel):
+    id: int
+    order_no: str
+    product_id: int
+    section: str
+    schedule_qty: float
+    ask_till_date: Optional[float]
+    produced_qty: float
+    completion_pct: Optional[float]
+    balance_qty: float
+    opening_stock: float
+    status: ProductionStatus
+    start_date: Optional[date]
+    completion_date: Optional[date]
+    report_date: date
+    remarks: str
+    product: Optional[ProductOut] = None
+    movements: list[ProductionMovementOut] = []
+
+
+# ------------------------- Orders -------------------------
+class SalesOrderLineIn(BaseModel):
+    product_id: Optional[int] = None
+    description: str = ""
+    quantity: float = 0
+    unit_price: Optional[float] = None
+    amount: Optional[float] = None
+
+
+class SalesOrderCreate(BaseModel):
+    order_no: Optional[str] = None
+    customer_id: Optional[int] = None
+    order_date: date = Field(default_factory=date.today)
+    required_delivery_date: Optional[date] = None
+    status: OrderStatus = OrderStatus.new
+    remarks: str = ""
+    lines: list[SalesOrderLineIn] = []
+
+
+class SalesOrderUpdate(BaseModel):
+    customer_id: Optional[int] = None
+    order_date: Optional[date] = None
+    required_delivery_date: Optional[date] = None
+    status: Optional[OrderStatus] = None
+    remarks: Optional[str] = None
+    lines: Optional[list[SalesOrderLineIn]] = None
+
+
+class SalesOrderLineOut(ORMModel):
+    id: int
+    product_id: Optional[int]
+    description: str
+    quantity: float
+    unit_price: Optional[float]
+    amount: Optional[float]
+    product: Optional[ProductOut] = None
+
+
+class SalesOrderOut(ORMModel):
+    id: int
+    order_no: str
+    customer_id: Optional[int]
+    order_date: date
+    required_delivery_date: Optional[date]
+    status: OrderStatus
+    total_value: float
+    remarks: str
+    created_at: datetime
+    customer: Optional[CustomerOut] = None
+    lines: list[SalesOrderLineOut] = []
+
+
+# ------------------------- Dispatch -------------------------
+class DispatchLineIn(BaseModel):
+    product_id: Optional[int] = None
+    description: str = ""
+    quantity: float = 0
+    dispatch_date: date = Field(default_factory=date.today)
+    rate: Optional[float] = None
+    weight: Optional[float] = None
+
+
+class DispatchCreate(BaseModel):
+    dispatch_no: Optional[str] = None
+    customer_id: Optional[int] = None
+    plant_id: Optional[int] = None
+    sales_order_id: Optional[int] = None
+    sales_person: str = ""
+    schedule_qty: float = 0
+    ask_till_date: Optional[float] = None
+    dispatched_qty: float = 0
+    opening_stock: float = 0
+    status: DispatchStatus = DispatchStatus.pending
+    dispatch_date: Optional[date] = None
+    delivery_status: str = ""
+    transport_details: str = ""
+    report_date: date = Field(default_factory=date.today)
+    remarks: str = ""
+    lines: list[DispatchLineIn] = []
+
+
+class DispatchUpdate(BaseModel):
+    customer_id: Optional[int] = None
+    plant_id: Optional[int] = None
+    sales_order_id: Optional[int] = None
+    sales_person: Optional[str] = None
+    schedule_qty: Optional[float] = None
+    ask_till_date: Optional[float] = None
+    dispatched_qty: Optional[float] = None
+    opening_stock: Optional[float] = None
+    status: Optional[DispatchStatus] = None
+    dispatch_date: Optional[date] = None
+    delivery_status: Optional[str] = None
+    transport_details: Optional[str] = None
+    report_date: Optional[date] = None
+    remarks: Optional[str] = None
+    lines: Optional[list[DispatchLineIn]] = None
+
+
+class DispatchLineOut(ORMModel):
+    id: int
+    product_id: Optional[int]
+    description: str
+    quantity: float
+    dispatch_date: date
+    rate: Optional[float]
+    weight: Optional[float]
+    product: Optional[ProductOut] = None
+
+
+class DispatchOut(ORMModel):
+    id: int
+    dispatch_no: str
+    customer_id: Optional[int]
+    plant_id: Optional[int]
+    sales_order_id: Optional[int]
+    sales_person: str
+    schedule_qty: float
+    ask_till_date: Optional[float]
+    dispatched_qty: float
+    completion_pct: Optional[float]
+    balance_qty: float
+    opening_stock: float
+    status: DispatchStatus
+    dispatch_date: Optional[date]
+    delivery_status: str
+    transport_details: str
+    report_date: date
+    remarks: str
+    created_at: datetime
+    customer: Optional[CustomerOut] = None
+    plant: Optional[PlantOut] = None
+    lines: list[DispatchLineOut] = []
+
+
+# ------------------------- Plans -------------------------
+class PlanCreate(BaseModel):
+    plan_type: PlanType
+    model: str
+    product_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    quantity: Optional[float] = None
+    rate: Optional[float] = None
+    weight: Optional[float] = None
+    owner: str = ""
+    status: str = "PENDING"
+    plan_date: date = Field(default_factory=date.today)
+    remarks: str = ""
+
+
+class PlanUpdate(BaseModel):
+    model: Optional[str] = None
+    product_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    quantity: Optional[float] = None
+    rate: Optional[float] = None
+    weight: Optional[float] = None
+    owner: Optional[str] = None
+    status: Optional[str] = None
+    plan_date: Optional[date] = None
+    remarks: Optional[str] = None
+
+
+class PlanOut(ORMModel):
+    id: int
+    plan_type: PlanType
+    model: str
+    product_id: Optional[int]
+    customer_id: Optional[int]
+    quantity: Optional[float]
+    rate: Optional[float]
+    weight: Optional[float]
+    owner: str
+    status: str
+    plan_date: date
+    remarks: str
+    product: Optional[ProductOut] = None
+    customer: Optional[CustomerOut] = None
+
+
+# ------------------------- Meta -------------------------
+class DashboardSummary(BaseModel):
+    total_orders: int
+    new_orders_today: int
+    pending_orders: int
+    completed_orders: int
+    orders_in_production: int
+    ready_to_dispatch: int
+    orders_dispatched: int
+    order_value: float
+    raw_material_count: int
+    raw_material_stock: float
+    low_stock_items: int
+    out_of_stock_items: int
+    production_planned_qty: float
+    production_produced_qty: float
+    production_pending_qty: float
+    purchase_count: int
+    purchase_value: float
+    dispatch_scheduled: float
+    dispatch_done: float
+    dispatch_pending: float
+    supplier_count: int
+    customer_count: int
+    plant_count: int
+    product_count: int
+    store_items: int
+
+
+class PageOut(BaseModel):
+    items: list[Any]
+    total: int
+    page: int
+    page_size: int
