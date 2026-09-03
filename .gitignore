@@ -23,6 +23,10 @@ frontend/.vite/
 reports/
 data/
 
+# Exported data files (bank/downloads outside reports/)
+export_*.csv
+export_*.xlsx
+
 # IDE / OS
 .vscode/
 .idea/

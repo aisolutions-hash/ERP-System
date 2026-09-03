@@ -5,15 +5,15 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response, StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from ..auth import CurrentUser
 from ..config import settings
 from ..database import get_db
 from ..models import (
-    Customer, Dispatch, Inventory, Plant, Product, ProductionOrder,
-    PurchaseOrder, RawMaterialBalance, SalesOrder, StockMovement, Supplier,
+    Customer, Dispatch, DispatchLine, Inventory, Plant, Product, ProductionOrder,
+    PurchaseOrder, RawMaterialBalance, SalesOrder, SalesOrderLine, StockMovement, Supplier,
 )
 from datetime import date
 
@@ -239,3 +239,129 @@ def excel_report(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={fname}"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Delivery Report (Phase 6K): Completed / Partially Dispatched / Not Dispatched
+# ---------------------------------------------------------------------------
+def _delivery_rows(db: Session, customer_id: int | None = None,
+                   date_from: str = "", date_to: str = ""):
+    """Per order-line delivery ledger with rollup-ready fields."""
+    stmt = (select(SalesOrder, SalesOrderLine)
+            .join(SalesOrderLine, SalesOrderLine.order_id == SalesOrder.id))
+    if customer_id:
+        stmt = stmt.where(SalesOrder.customer_id == customer_id)
+    if date_from:
+        stmt = stmt.where(SalesOrder.order_date >= date.fromisoformat(date_from))
+    if date_to:
+        stmt = stmt.where(SalesOrder.order_date <= date.fromisoformat(date_to))
+    rows = db.execute(stmt).all()
+    items = []
+    for o, ln in rows:
+        dispatched = db.scalar(
+            select(func.coalesce(func.sum(DispatchLine.quantity), 0))
+            .select_from(Dispatch)
+            .join(DispatchLine, DispatchLine.dispatch_id == Dispatch.id)
+            .where(Dispatch.sales_order_id == o.id)
+        ) or 0.0
+        ordered = float(ln.quantity or 0)
+        disp = float(dispatched or 0)
+        if ordered == 0:
+            dstatus = "Not Dispatched"
+        elif disp >= ordered:
+            dstatus = "Completed"
+        elif disp > 0:
+            dstatus = "Partially Dispatched"
+        else:
+            dstatus = "Not Dispatched"
+        items.append({
+            "order_id": o.id, "order_no": o.order_no, "order_type": o.order_type.value,
+            "customer_id": o.customer_id, "customer": o.customer.name if o.customer else None,
+            "order_date": o.order_date.isoformat(), "period": f"{o.order_date.year}-{o.order_date.month:02d}",
+            "customer_po_no": ln.customer_po_no or o.customer_po_no or "",
+            "product_id": ln.product_id, "model": ln.product.model if ln.product else None,
+            "item_code": ln.product.item_code if ln.product else (ln.description or ""),
+            "ordered_qty": ordered, "dispatched_qty": disp,
+            "balance_qty": round(ordered - disp, 4),
+            "delivery_status": dstatus,
+        })
+    return items
+
+
+@router.get("/delivery")
+def delivery_report(
+    db: Annotated[Session, Depends(get_db)],
+    _: CurrentUser,
+    customer_id: int | None = None,
+    date_from: str = "",
+    date_to: str = "",
+    status: str = "",
+):
+    """Delivery report: classify each order line as Completed / Partially
+    Dispatched / Not Dispatched, plus a per-customer rollup."""
+    items = _delivery_rows(db, customer_id=customer_id, date_from=date_from, date_to=date_to)
+    if status:
+        items = [i for i in items if i["delivery_status"] == status]
+
+    # per-customer rollup
+    by = {}
+    for i in items:
+        key = i["customer_id"]
+        e = by.setdefault(key, {
+            "customer_id": key, "customer": i["customer"],
+            "orders": set(), "ordered": 0.0, "dispatched": 0.0, "balance": 0.0,
+            "completed": 0, "partial": 0, "not_dispatched": 0,
+        })
+        e["orders"].add(i["order_id"])
+        e["ordered"] += i["ordered_qty"]
+        e["dispatched"] += i["dispatched_qty"]
+        e["balance"] += i["balance_qty"]
+        if i["delivery_status"] == "Completed":
+            e["completed"] += 1
+        elif i["delivery_status"] == "Partially Dispatched":
+            e["partial"] += 1
+        else:
+            e["not_dispatched"] += 1
+    summary = []
+    for e in by.values():
+        e["ordered"] = round(e["ordered"], 4)
+        e["dispatched"] = round(e["dispatched"], 4)
+        e["balance"] = round(e["balance"], 4)
+        e["order_count"] = len(e["orders"])
+        e["delivery_pct"] = round(e["dispatched"] / e["ordered"], 4) if e["ordered"] else 0.0
+        summary.append({k: (len(v) if isinstance(v, set) else v) for k, v in e.items()})
+    summary.sort(key=lambda x: -(x.get("ordered") or 0))
+
+    total_ordered = round(sum(x["ordered_qty"] for x in items), 4)
+    total_dispatched = round(sum(x["dispatched_qty"] for x in items), 4)
+    status_count = {}
+    for i in items:
+        status_count[i["delivery_status"]] = status_count.get(i["delivery_status"], 0) + 1
+    return {
+        "items": items,
+        "summary": summary,
+        "total": len(items),
+        "totals": {
+            "ordered": total_ordered,
+            "dispatched": total_dispatched,
+            "balance": round(total_ordered - total_dispatched, 4),
+            "by_status": status_count,
+        },
+    }
+
+
+@router.get("/delivery/csv")
+def delivery_csv(
+    db: Annotated[Session, Depends(get_db)],
+    _: CurrentUser,
+    customer_id: int | None = None,
+    date_from: str = "",
+    date_to: str = "",
+):
+    items = _delivery_rows(db, customer_id=customer_id, date_from=date_from, date_to=date_to)
+    headers = ["Order No", "Customer", "Order Date", "PO No", "Product", "Item Code",
+               "Ordered Qty", "Dispatched Qty", "Balance", "Delivery Status"]
+    data = [[i["order_no"], i["customer"] or "", i["order_date"], i["customer_po_no"],
+             i["model"] or "", i["item_code"], i["ordered_qty"], i["dispatched_qty"],
+             i["balance_qty"], i["delivery_status"]] for i in items]
+    return _csv_response(headers, data, "delivery_report.csv")

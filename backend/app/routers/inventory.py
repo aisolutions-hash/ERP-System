@@ -3,7 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from ..auth import CurrentUser, AllStaff
 from ..crud import get_or_404, write_audit
@@ -136,7 +136,15 @@ def list_movements(
     if date_to:
         stmt = stmt.where(StockMovement.transaction_date <= date.fromisoformat(date_to))
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
-    rows = db.scalars(stmt.order_by(StockMovement.transaction_date.desc(), StockMovement.id.desc())
+    rows = db.scalars(stmt.options(selectinload(StockMovement.product), selectinload(StockMovement.plant))
+                      .order_by(StockMovement.transaction_date.desc(), StockMovement.id.desc())
                       .offset((page - 1) * page_size).limit(page_size)).all()
-    return {"items": [StockMovementOut.model_validate(m).model_dump() for m in rows],
-            "total": total, "page": page, "page_size": page_size}
+    items = []
+    for m in rows:
+        item = StockMovementOut.model_validate(m).model_dump()
+        p = m.product
+        item["product"] = {"id": p.id, "model": p.model, "uom": p.uom,
+                           "item_code": p.item_code, "category": p.category.value} if p else None
+        item["plant"] = m.plant.name if m.plant else None
+        items.append(item)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}

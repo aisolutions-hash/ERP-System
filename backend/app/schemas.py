@@ -7,7 +7,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from .models import (
-    DispatchStatus, MovementType, OrderStatus, PlanType, ProductCategory,
+    DispatchStatus, MovementType, OrderStatus, OrderType, PlanType, ProductCategory,
     ProductionStatus, PurchaseStatus, UserRole,
 )
 
@@ -350,11 +350,24 @@ class SalesOrderLineIn(BaseModel):
     quantity: float = 0
     unit_price: Optional[float] = None
     amount: Optional[float] = None
+    customer_po_no: str = ""
+
+
+class SalesOrderLineUpdate(BaseModel):
+    product_id: Optional[int] = None
+    description: Optional[str] = None
+    quantity: Optional[float] = None
+    unit_price: Optional[float] = None
+    amount: Optional[float] = None
+    customer_po_no: Optional[str] = None
 
 
 class SalesOrderCreate(BaseModel):
     order_no: Optional[str] = None
     customer_id: Optional[int] = None
+    order_type: OrderType = OrderType.oem
+    customer_po_no: str = ""
+    salesperson_id: Optional[int] = None
     order_date: date = Field(default_factory=date.today)
     required_delivery_date: Optional[date] = None
     status: OrderStatus = OrderStatus.new
@@ -521,6 +534,87 @@ class PlanOut(ORMModel):
     remarks: str
     product: Optional[ProductOut] = None
     customer: Optional[CustomerOut] = None
+
+
+# ------------------------- BOM -------------------------
+class BOMBase(BaseModel):
+    product_id: int
+    raw_material_product_id: int
+    quantity_per_unit: float = Field(gt=0)
+    uom: str = "KG"
+    effective_date: date = Field(default_factory=date.today)
+    version: int = 1
+    notes: str = ""
+
+
+class BOMCreate(BOMBase):
+    pass
+
+
+class BOMUpdate(BaseModel):
+    quantity_per_unit: Optional[float] = Field(default=None, gt=0)
+    uom: Optional[str] = None
+    effective_date: Optional[date] = None
+    version: Optional[int] = None
+    is_active: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class BOMOut(BOMBase, ORMModel):
+    id: int
+    is_active: bool
+    created_at: datetime
+    product: Optional[ProductOut] = None
+    raw_material: Optional[ProductOut] = None
+
+
+# ------------------------- Alerts -------------------------
+class AlertOut(ORMModel):
+    id: int
+    type: str
+    priority: str
+    message: str
+    entity_type: str
+    entity_id: Optional[int]
+    target_role: str
+    is_read: bool
+    status: str
+    created_at: datetime
+    resolved_at: Optional[datetime]
+
+
+class AlertUpdate(BaseModel):
+    is_read: Optional[bool] = None
+    status: Optional[str] = None
+
+
+# ------------------------- Material Requirements -------------------------
+class MaterialRequirementItem(BaseModel):
+    product_id: int
+    product_name: str
+    production_quantity: float
+    raw_material_id: int
+    raw_material_name: str
+    bom_quantity_per_unit: float
+    uom: str
+    required_quantity: float
+    available_quantity: float
+    shortage_quantity: float
+    status: str  # READY | SHORTAGE | NO_BOM
+
+
+# ------------------------- Fulfilment Indicators -------------------------
+class FulfilmentIndicator(BaseModel):
+    sales_order_line_id: int
+    order_no: str
+    product_name: str
+    ordered_qty: float
+    fulfilled_qty: float
+    balance: float
+    available_stock: float
+    source_type: str
+    fulfilment_status: str  # READY | PRODUCTION_REQUIRED | PURCHASE_REQUIRED | MANUAL_DECISION_REQUIRED | NO_BOM
+    shortage_qty: float
 
 
 # ------------------------- Meta -------------------------

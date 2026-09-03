@@ -9,8 +9,8 @@ from ..auth import CurrentUser, AllStaff, ManagerOrAdmin
 from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
 from ..models import (
-    Inventory, MovementType, Plant, ProductionMovement, ProductionOrder,
-    ProductionStatus, StockMovement,
+    Inventory, MovementType, Plant, Product, ProductionMovement, ProductionOrder,
+    ProductionStatus, StockMovement, Plan, PlanType,
 )
 from ..schemas import ProductionOrderCreate, ProductionOrderOut, ProductionOrderUpdate
 from datetime import date
@@ -83,8 +83,6 @@ def list_production(
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_production(body: ProductionOrderCreate, db: Annotated[Session, Depends(get_db)],
                       user: AllStaff):
-    get_or_404(db, __import__("..models", fromlist=["Product"]).Product, body.product_id)
-    from ..models import Product
     get_or_404(db, Product, body.product_id)
     o = ProductionOrder(
         order_no=body.order_no or _next_no(db), product_id=body.product_id,
@@ -99,6 +97,90 @@ def create_production(body: ProductionOrderCreate, db: Annotated[Session, Depend
     db.refresh(o)
     write_audit(db, user, "CREATE", "production_orders", o.id, f"Created production order {o.order_no}")
     return _serialize_po(db, o)
+
+
+@router.get("/actual", response_model=dict)
+def list_production_actual(
+    db: Annotated[Session, Depends(get_db)],
+    _: CurrentUser,
+    product_id: int | None = None,
+    date_from: str = "",
+    date_to: str = "",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=1000),
+):
+    """Daily production output (actual) — never collapsed into monthly numbers."""
+    stmt = (select(ProductionMovement)
+            .join(ProductionOrder, ProductionOrder.id == ProductionMovement.production_order_id)
+            .join(Product, Product.id == ProductionOrder.product_id, isouter=True))
+    if product_id:
+        stmt = stmt.where(ProductionOrder.product_id == product_id)
+    if date_from:
+        stmt = stmt.where(ProductionMovement.production_date >= date.fromisoformat(date_from))
+    if date_to:
+        stmt = stmt.where(ProductionMovement.production_date <= date.fromisoformat(date_to))
+    total = db.scalar(select(func.count()).select_from(stmt.subquery()))
+    rows = db.scalars(stmt.order_by(ProductionMovement.production_date.desc(), ProductionMovement.id.desc())
+                      .offset((page - 1) * page_size).limit(page_size)).all()
+    items = []
+    for m in rows:
+        po = m.production_order
+        p = po.product if po else None
+        items.append({
+            "id": m.id, "production_order_id": m.production_order_id,
+            "production_date": m.production_date, "quantity": m.quantity,
+            "product_id": p.id if p else po.product_id,
+            "model": p.model if p else None,
+            "item_code": p.item_code if p else None,
+            "ref": po.order_no if po else "",
+        })
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/plan-vs-actual", response_model=dict)
+def plan_vs_actual(
+    db: Annotated[Session, Depends(get_db)],
+    _: CurrentUser,
+    product_id: int | None = None,
+):
+    """Plan vs Actual for each ProductionOrder (reliable FK link to its daily
+    movements). Plan-only `Plan` records with no production order are returned
+    in `unlinked_plans` (no fabricated plan-to-actual relationship)."""
+    stmt = select(ProductionOrder)
+    if product_id:
+        stmt = stmt.where(ProductionOrder.product_id == product_id)
+    orders = db.scalars(stmt.order_by(ProductionOrder.id)).all()
+    rows = []
+    for po in orders:
+        p = po.product
+        actual = float(po.produced_qty or 0)
+        planned = float(po.schedule_qty or 0)
+        remaining = planned - actual
+        pct = round(actual / planned, 4) if planned else 0.0
+        rows.append({
+            "plan_id": po.id, "product_id": po.product_id,
+            "model": p.model if p else None,
+            "item_code": p.item_code if p else None,
+            "planned_qty": planned, "actual_qty": actual,
+            "remaining_qty": remaining, "completion_pct": pct,
+            "status": po.status.value, "report_date": po.report_date,
+            "movement_count": len(po.movements),
+        })
+    unlinked = []
+    prod_orders = {po.product_id for po in orders}
+    plans = db.scalars(select(Plan).where(Plan.plan_type == PlanType.production)).all()
+    for pl in plans:
+        if pl.product_id in prod_orders:
+            continue
+        unlinked.append({
+            "plan_id": pl.id, "product_id": pl.product_id, "model": pl.model,
+            "customer": pl.customer.name if pl.customer else None,
+            "owner": pl.owner, "planned_qty": pl.quantity,
+            "plan_date": pl.plan_date, "status": pl.status, "remarks": pl.remarks,
+            "linkage": "Plan only — no production order link",
+        })
+    rows.sort(key=lambda x: -x["completion_pct"])
+    return {"items": rows, "unlinked_plans": unlinked, "total": len(rows)}
 
 
 @router.get("/{order_id}", response_model=dict)
@@ -144,6 +226,26 @@ def add_movement(order_id: int, quantity: float, production_date: str,
     db.commit()
     db.refresh(o)
     write_audit(db, user, "CREATE", "production_movements", o.id, f"{quantity} output on {production_date}")
+    return _serialize_po(db, o)
+
+
+@router.patch("/movements/{movement_id}", response_model=dict)
+def update_movement(movement_id: int, quantity: float,
+                    db: Annotated[Session, Depends(get_db)], user: AllStaff,
+                    production_date: str = ""):
+    """Edit a daily production output quantity (actual) + date."""
+    m = get_or_404(db, ProductionMovement, movement_id)
+    o = get_or_404(db, ProductionOrder, m.production_order_id)
+    delta = quantity - float(m.quantity or 0)
+    m.quantity = quantity
+    if production_date:
+        m.production_date = date.fromisoformat(production_date)
+    o.produced_qty = float(o.produced_qty or 0) + delta
+    _recalc_status(o)
+    db.commit()
+    db.refresh(o)
+    write_audit(db, user, "UPDATE", "production_movements", movement_id,
+                f"Output {movement_id}: {m.quantity}")
     return _serialize_po(db, o)
 
 

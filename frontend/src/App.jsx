@@ -9,10 +9,18 @@ import Inventory from './pages/Inventory'
 import Production from './pages/Production'
 import Orders from './pages/Orders'
 import Dispatch from './pages/Dispatch'
+import PendingPO from './pages/PendingPO'
+import Requirements from './pages/Requirements'
+import LocalOrders from './pages/LocalOrders'
+import BOM from './pages/BOM'
+import MaterialRequirements from './pages/MaterialRequirements'
+import Fulfilment from './pages/Fulfilment'
+import Alerts from './pages/Alerts'
 import Customers from './pages/Customers'
 import Suppliers from './pages/Suppliers'
 import Reports from './pages/Reports'
 import Users from './pages/Users'
+import StockMovements from './pages/StockMovements'
 
 function RequireAuth({ children }) {
   const { user } = useAuth()
@@ -38,9 +46,17 @@ function App() {
             <Route path="raw-materials" element={<RawMaterials />} />
             <Route path="purchases" element={<Purchases />} />
             <Route path="inventory" element={<Inventory />} />
+            <Route path="stock-movements" element={<StockMovements />} />
             <Route path="production" element={<Production />} />
             <Route path="orders" element={<Orders />} />
             <Route path="dispatch" element={<Dispatch />} />
+            <Route path="pending-po" element={<PendingPO />} />
+            <Route path="requirements" element={<Requirements />} />
+            <Route path="bom" element={<BOM />} />
+            <Route path="material-requirements" element={<MaterialRequirements />} />
+            <Route path="fulfilment" element={<Fulfilment />} />
+            <Route path="alerts" element={<Alerts />} />
+            <Route path="local-orders" element={<LocalOrders />} />
             <Route path="customers" element={<Customers />} />
             <Route path="suppliers" element={<Suppliers />} />
             <Route path="reports" element={<Reports />} />

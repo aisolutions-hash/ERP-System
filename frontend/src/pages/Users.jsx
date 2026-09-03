@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Plus, Pencil, Trash2, Search } from 'lucide-react'
+import { Plus, Pencil, Trash2, Search, Users as UsersIcon, UserCheck, ShieldCheck } from 'lucide-react'
 import api from '../lib/api'
-import { PageHeader, Card, Modal, Loading, Empty, Badge } from '../components/ui'
+import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard } from '../components/ui'
 import Table from '../components/Table'
 import { RoleBadge } from '../lib/format'
 
@@ -61,17 +61,17 @@ export default function Users() {
   }
 
   const columns = [
-    { key: 'username', label: 'Username', render: (r) => <span className="font-medium">{r.username}</span> },
+    { key: 'username', label: 'Username', render: (r) => <span className="font-mono text-xs font-medium">{r.username}</span> },
     { key: 'full_name', label: 'Full Name', render: (r) => r.full_name || '—' },
-    { key: 'email', label: 'Email' },
+    { key: 'email', label: 'Email', render: (r) => r.email || '—' },
     { key: 'role', label: 'Role', render: (r) => <RoleBadge role={r.role} /> },
     { key: 'is_active', label: 'Status', render: (r) => <Badge className={r.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}>{r.is_active ? 'Active' : 'Inactive'}</Badge> },
     {
       key: 'actions', label: '',
       render: (r) => (
-        <div className="flex gap-2">
-          <button onClick={() => openEdit(r)} className="text-slate-400 hover:text-slate-700"><Pencil size={15} /></button>
-          <button onClick={() => remove(r)} className="text-slate-400 hover:text-red-600"><Trash2 size={15} /></button>
+        <div className="flex gap-1.5">
+          <button onClick={() => openEdit(r)} className="btn btn-ghost p-1.5" title="Edit"><Pencil size={15} /></button>
+          <button onClick={() => remove(r)} className="btn btn-ghost p-1.5 text-red-400" title="Delete"><Trash2 size={15} /></button>
         </div>
       ),
     },
@@ -79,37 +79,42 @@ export default function Users() {
 
   const field = (label, key, props = {}) => (
     <div>
-      <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
+      <label className="block text-xs text-slate-500 mb-1">{label}</label>
       <input
         value={form[key] ?? ''}
         onChange={(e) => setForm({ ...form, [key]: e.target.value })}
-        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+        className="input"
         {...props}
       />
     </div>
   )
 
+  const active = items.filter((i) => i.is_active).length
+  const admins = items.filter((i) => i.role === 'admin').length
+
   return (
-    <div>
+    <div className="animate-fade-in-up">
       <PageHeader
         title="Users"
         subtitle="Manage system users and roles"
-        actions={
-          <button onClick={openCreate} className="inline-flex items-center gap-1.5 text-sm bg-slate-900 text-white rounded-lg px-3 py-2 hover:bg-slate-800">
-            <Plus size={15} /> Add User
-          </button>
-        }
+        actions={<button onClick={openCreate} className="btn btn-primary"><Plus size={15} /> Add User</button>}
       />
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+        <StatCard label="Total Users" value={items.length} icon={UsersIcon} iconClass="bg-amber-50 text-amber-600" />
+        <StatCard label="Active" value={active} icon={UserCheck} iconClass="bg-green-50 text-green-600" valueClass="text-green-600" />
+        <StatCard label="Admins" value={admins} icon={ShieldCheck} iconClass="bg-violet-50 text-violet-600" />
+      </div>
 
       <Card
         actions={
           <div className="relative">
-            <Search size={15} className="absolute left-3 top-2.5 text-slate-400" />
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search user…"
-              className="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-400"
+              className="input input-icon sm:w-56"
             />
           </div>
         }
@@ -119,22 +124,26 @@ export default function Users() {
         ) : items.length === 0 ? (
           <Empty />
         ) : (
-          <Table columns={columns} data={items} keyField="id" />
+          <Table columns={columns} data={items} keyField="id" stickyColumns={['username']} dense />
         )}
       </Card>
 
       {modal && (
-        <Modal open title={modal === 'create' ? 'Add User' : 'Edit User'} onClose={() => setModal(null)}>
+        <Modal open title={modal === 'create' ? 'Add User' : 'Edit User'} onClose={() => setModal(null)}
+          footer={<>
+            <button type="button" onClick={() => setModal(null)} className="btn btn-secondary">Cancel</button>
+            <button type="submit" disabled={saving} className="btn btn-primary">{saving ? 'Saving…' : 'Save'}</button>
+          </>}>
           <form onSubmit={save} className="space-y-4">
             {field('Username *', 'username', { required: true })}
             {field('Full Name', 'full_name')}
             {field('Email *', 'email', { type: 'email', required: true })}
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Role</label>
+              <label className="block text-xs text-slate-500 mb-1">Role</label>
               <select
                 value={form.role}
                 onChange={(e) => setForm({ ...form, role: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+                className="input"
               >
                 <option value="admin">Admin</option>
                 <option value="manager">Manager</option>
@@ -145,12 +154,6 @@ export default function Users() {
               </select>
             </div>
             {field(modal === 'create' ? 'Password *' : 'New Password (leave blank to keep)', 'password', { type: 'password', required: modal === 'create' })}
-            <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={() => setModal(null)} className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">Cancel</button>
-              <button type="submit" disabled={saving} className="px-4 py-2 text-sm bg-slate-900 text-white rounded-lg hover:bg-slate-800 disabled:opacity-60">
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-            </div>
           </form>
         </Modal>
       )}

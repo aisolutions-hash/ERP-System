@@ -9,10 +9,12 @@ from ..auth import CurrentUser, AllStaff, ManagerOrAdmin
 from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
 from ..models import (
-    Customer, Dispatch, OrderStatus, Product, SalesOrder, SalesOrderLine,
+    Customer, Dispatch, DispatchLine, OrderStatus, OrderType, Product,
+    ProductSourceType, SalesOrder, SalesOrderLine, StockMovement, MovementType,
 )
 from ..schemas import (
-    SalesOrderCreate, SalesOrderLineIn, SalesOrderOut, SalesOrderUpdate,
+    SalesOrderCreate, SalesOrderLineIn, SalesOrderLineUpdate, SalesOrderOut,
+    SalesOrderUpdate,
 )
 from datetime import date
 
@@ -29,13 +31,25 @@ def _serialize_order(db: Session, o: SalesOrder) -> dict:
     customer = o.customer
     lines = []
     for ln in o.lines:
+        # dispatched quantity for this order line
+        d_qty = db.scalar(
+            select(func.coalesce(func.sum(DispatchLine.quantity), 0))
+            .select_from(Dispatch)
+            .join(DispatchLine, DispatchLine.dispatch_id == Dispatch.id)
+            .where(Dispatch.sales_order_id == o.id)
+        ) if o.order_type == OrderType.oem else 0.0
         lines.append({
             "id": ln.id, "product_id": ln.product_id, "description": ln.description,
-            "quantity": ln.quantity,
+            "quantity": ln.quantity, "customer_po_no": ln.customer_po_no,
             "unit_price": float(ln.unit_price) if ln.unit_price is not None else None,
             "amount": float(ln.amount) if ln.amount is not None else None,
+            "balance_qty": float(ln.quantity or 0) - float(d_qty or 0),
+            "dispatched_qty": float(d_qty or 0),
+            "fulfilment": _fulfilment_label(ln.product, ln.quantity, d_qty),
             "product": {"id": ln.product.id, "model": ln.product.model,
-                        "item_code": ln.product.item_code, "category": ln.product.category.value} if ln.product else None,
+                        "item_code": ln.product.item_code, "category": ln.product.category.value,
+                        "source_type": ln.product.source_type.value if ln.product.source_type else None}
+            if ln.product else None,
         })
     dispatch_qty = db.scalar(
         select(func.coalesce(func.sum(Dispatch.dispatched_qty), 0)).where(Dispatch.sales_order_id == o.id)
@@ -43,12 +57,31 @@ def _serialize_order(db: Session, o: SalesOrder) -> dict:
     return {
         "id": o.id, "order_no": o.order_no, "customer_id": o.customer_id,
         "order_date": o.order_date, "required_delivery_date": o.required_delivery_date,
+        "order_type": o.order_type.value, "customer_po_no": o.customer_po_no,
+        "salesperson": {"id": o.salesperson.id, "name": o.salesperson.name} if o.salesperson else None,
         "status": o.status.value, "total_value": float(o.total_value), "remarks": o.remarks,
         "created_at": o.created_at,
         "customer": {"id": customer.id, "name": customer.name} if customer else None,
         "lines": lines,
         "dispatch_qty": float(dispatch_qty or 0),
     }
+
+
+def _fulfilment_label(product, quantity, d_qty) -> str:
+    """Indicator only (no auto-purchase/production)."""
+    bal = float(quantity or 0) - float(d_qty or 0)
+    if bal <= 0 and float(d_qty or 0) > 0:
+        return "Fulfilled"
+    if product is None:
+        return "Manual Decision Required"
+    st = product.source_type
+    if st == ProductSourceType.trading:
+        return "Purchase Required"
+    if st == ProductSourceType.manufactured:
+        return "Production Required"
+    if st == ProductSourceType.mixed:
+        return "Manual Decision Required"
+    return "Manual Decision Required"
 
 
 def _recalc_total(o: SalesOrder, lines: list[SalesOrderLine]):
@@ -68,6 +101,7 @@ def list_orders(
     _: CurrentUser,
     search: str = "",
     status_: str = Query(default="", alias="status"),
+    order_type: str = Query(default="", alias="order_type"),
     customer_id: int | None = None,
     date_from: str = "",
     date_to: str = "",
@@ -80,6 +114,11 @@ def list_orders(
         stmt = stmt.where(SalesOrder.order_no.ilike(like))
     if status_:
         stmt = stmt.where(SalesOrder.status == status_)
+    if order_type:
+        try:
+            stmt = stmt.where(SalesOrder.order_type == OrderType[order_type.lower()])
+        except KeyError:
+            pass
     if customer_id:
         stmt = stmt.where(SalesOrder.customer_id == customer_id)
     if date_from:
@@ -98,20 +137,105 @@ def create_order(body: SalesOrderCreate, db: Annotated[Session, Depends(get_db)]
                  user: AllStaff):
     lines = [SalesOrderLine(**ln.model_dump()) for ln in body.lines]
     o = SalesOrder(order_no=body.order_no or _next_no(db), customer_id=body.customer_id,
+                   order_type=body.order_type, customer_po_no=body.customer_po_no,
+                   salesperson_id=body.salesperson_id,
                    order_date=body.order_date, required_delivery_date=body.required_delivery_date,
                    status=body.status, remarks=body.remarks, lines=lines)
     _recalc_total(o, lines)
     db.add(o)
     db.commit()
     db.refresh(o)
-    write_audit(db, user, "CREATE", "sales_orders", o.id, f"Created order {o.order_no}")
+    write_audit(db, user, "CREATE", "sales_orders", o.id, f"Created {o.order_type.value} order {o.order_no}")
     return _serialize_order(db, o)
+
+
+@router.get("/pending", response_model=dict)
+def pending_orders(
+    db: Annotated[Session, Depends(get_db)],
+    _: CurrentUser,
+    mode: str = Query(default="all", alias="mode"),  # all | current | previous
+    order_type: str = Query(default="", alias="order_type"),
+    customer_id: int | None = None,
+):
+    """Pending PO / order ledger: ordered vs dispatched; balance determines
+    Pending (>0), Completed/Closed (=0), Over-fulfilled (<0). Negative balance
+    is valid business data (over-dispatch preserved)."""
+    stmt = select(SalesOrder, SalesOrderLine)
+    stmt = stmt.join(SalesOrderLine, SalesOrderLine.order_id == SalesOrder.id)
+    if customer_id:
+        stmt = stmt.where(SalesOrder.customer_id == customer_id)
+    if order_type:
+        try:
+            stmt = stmt.where(SalesOrder.order_type == OrderType[order_type.lower()])
+        except KeyError:
+            pass
+    if mode in ("current",):
+        stmt = stmt.where(
+            func.extract("year", SalesOrder.order_date) == 2026,
+            func.extract("month", SalesOrder.order_date) == 8)
+    rows = db.execute(stmt).all()
+    items = []
+    for o, ln in rows:
+        d_qty = db.scalar(
+            select(func.coalesce(func.sum(DispatchLine.quantity), 0))
+            .select_from(Dispatch)
+            .join(DispatchLine, DispatchLine.dispatch_id == Dispatch.id)
+            .where(Dispatch.sales_order_id == o.id)
+        ) or 0.0
+        ordered = float(ln.quantity or 0)
+        disp = float(d_qty or 0)
+        balance = ordered - disp
+        if balance > 0:
+            pstatus = "Pending"
+        elif balance == 0:
+            pstatus = "Completed"
+        else:
+            pstatus = "Over-fulfilled"
+        items.append({
+            "order_id": o.id, "order_no": o.order_no, "order_type": o.order_type.value,
+            "customer_id": o.customer_id, "customer": o.customer.name if o.customer else None,
+            "order_date": o.order_date, "period": f"{o.order_date.year}-{o.order_date.month:02d}",
+            "line_id": ln.id, "product_id": ln.product_id,
+            "model": ln.product.model if ln.product else None,
+            "item_code": ln.product.item_code if ln.product else (ln.description or ""),
+            "customer_po_no": ln.customer_po_no or o.customer_po_no or "",
+            "ordered_qty": ordered, "dispatched_qty": disp, "balance_qty": balance,
+            "status": pstatus,
+        })
+    return {"items": items, "total": len(items), "mode": mode}
 
 
 @router.get("/{order_id}", response_model=dict)
 def get_order(order_id: int, db: Annotated[Session, Depends(get_db)],
               _: CurrentUser):
     return _serialize_order(db, get_or_404(db, SalesOrder, order_id))
+
+
+@router.patch("/lines/{line_id}", response_model=dict)
+def update_order_line(line_id: int, body: SalesOrderLineUpdate,
+                      db: Annotated[Session, Depends(get_db)], user: AllStaff):
+    """Edit a single order line's permitted fields. Dispatch/Balance remain
+    transaction-derived and are never directly editable."""
+    ln = get_or_404(db, SalesOrderLine, line_id)
+    o = get_or_404(db, SalesOrder, ln.order_id)
+    if body.product_id is not None:
+        ln.product_id = body.product_id
+    if body.description is not None:
+        ln.description = body.description
+    if body.quantity is not None:
+        ln.quantity = body.quantity
+    if body.unit_price is not None:
+        ln.unit_price = body.unit_price
+    if body.amount is not None:
+        ln.amount = body.amount
+    if body.customer_po_no is not None:
+        ln.customer_po_no = body.customer_po_no
+    _recalc_total(o, o.lines)
+    db.commit()
+    db.refresh(o)
+    write_audit(db, user, "UPDATE", "sales_order_lines", line_id,
+                f"Updated line {line_id} on order {o.order_no}")
+    return _serialize_order(db, o)
 
 
 @router.patch("/{order_id}", response_model=dict)

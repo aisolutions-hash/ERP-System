@@ -12,6 +12,8 @@ from . import models  # noqa: F401  (register models)
 from .routers import (
     auth, users, meta, customers, suppliers, products, plants, raw_materials,
     purchases, inventory, production, orders, dispatch, plans, dashboard, reports,
+    requirements, salespersons, local_orders, bom, alerts,
+    material_requirements, fulfilment,
 )
 
 app = FastAPI(
@@ -62,6 +64,13 @@ app.include_router(dispatch.router)
 app.include_router(plans.router)
 app.include_router(dashboard.router)
 app.include_router(reports.router)
+app.include_router(requirements.router)
+app.include_router(salespersons.router)
+app.include_router(local_orders.router)
+app.include_router(bom.router)
+app.include_router(alerts.router)
+app.include_router(material_requirements.router)
+app.include_router(fulfilment.router)
 
 
 # Serve the built React app in production mode (frontend/dist).

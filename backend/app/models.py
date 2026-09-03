@@ -33,6 +33,25 @@ class ProductCategory(str, enum.Enum):
     trading = "trading"
 
 
+class ProductSourceType(str, enum.Enum):
+    manufactured = "MANUFACTURED"
+    trading = "TRADING"
+    mixed = "MIXED"
+    unknown = "UNKNOWN"
+
+
+class OrderType(str, enum.Enum):
+    oem = "OEM"
+    trading = "TRADING"
+    manufacturing = "MANUFACTURING"
+    local = "LOCAL"
+
+
+class ConfirmationStatus(str, enum.Enum):
+    confirmed = "CONFIRMED"
+    needs_business_confirmation = "NEEDS_BUSINESS_CONFIRMATION"
+
+
 class OrderStatus(str, enum.Enum):
     new = "New"
     confirmed = "Confirmed"
@@ -73,6 +92,10 @@ class MovementType(str, enum.Enum):
     production_output = "PRODUCTION_OUTPUT"
     dispatch = "DISPATCH"
     adjustment = "ADJUSTMENT"
+    opening = "OPENING"
+    purchase_receipt = "PURCHASE_RECEIPT"
+    rm_consumption = "RM_CONSUMPTION"
+    transfer = "TRANSFER"
 
 
 class PlanType(str, enum.Enum):
@@ -111,7 +134,67 @@ class Customer(Base):
     is_plant: Mapped[bool] = mapped_column(Boolean, default=False)
     notes: Mapped[str] = mapped_column(Text, default="")
     source_excel: Mapped[str] = mapped_column(String(255), default="")
+    confirmation_status: Mapped[str] = mapped_column(String(60), default="CONFIRMED", index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CustomerAlias(Base):
+    """Original source spelling of a customer name (never silently merged)."""
+
+    __tablename__ = "customer_aliases"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), index=True)
+    alias: Mapped[str] = mapped_column(String(255), index=True)
+    match_rule: Mapped[str] = mapped_column(String(80), default="EXACT_SOURCE")
+    source_sheet: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    customer: Mapped[Customer] = relationship()
+
+
+class Salesperson(Base):
+    """Salesperson / owner names (DISPATCH col A, PLANE col A). Never a customer."""
+
+    __tablename__ = "salespersons"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ReportingPeriod(Base):
+    """Monthly reporting period (e.g. August 2026) with workbook metadata."""
+
+    __tablename__ = "reporting_periods"
+    __table_args__ = (UniqueConstraint("year", "month", name="uq_period_year_month"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    year: Mapped[int] = mapped_column(Integer)
+    month: Mapped[int] = mapped_column(Integer)
+    working_days: Mapped[float | None] = mapped_column(Float, nullable=True)
+    days_comp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    balance_days: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_file: Mapped[str] = mapped_column(String(255), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ImportBatch(Base):
+    """One isolated migration run. Live data is never touched by a batch."""
+
+    __tablename__ = "import_batches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_file: Mapped[str] = mapped_column(String(255), default="")
+    period_label: Mapped[str] = mapped_column(String(40), default="")
+    status: Mapped[str] = mapped_column(String(40), default="IMPORTED", index=True)
+    # IMPORTED -> VALIDATED -> READY_FOR_PROMOTION / NOT_READY_FOR_PROMOTION
+    hard_errors: Mapped[str] = mapped_column(Text, default="")
+    warnings: Mapped[str] = mapped_column(Text, default="")
+    stats: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -147,11 +230,38 @@ class Product(Base):
     )
     uom: Mapped[str] = mapped_column(String(30), default="Each")
     min_stock_level: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_type: Mapped[ProductSourceType] = mapped_column(
+        Enum(ProductSourceType), default=ProductSourceType.unknown, index=True
+    )
+    family: Mapped[str] = mapped_column(String(120), default="", index=True)
+    sourcing_note: Mapped[str] = mapped_column(Text, default="")
+    source_sheet: Mapped[str] = mapped_column(String(120), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
     source_excel: Mapped[str] = mapped_column(String(255), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     stock: Mapped[list[Inventory]] = relationship(back_populates="product", cascade="all, delete-orphan")
+
+
+class ProductAlias(Base):
+    """Alternate/legacy identifier for a product (typo codes, float codes,
+    leading-zero variants). Linkage only — no silent merging."""
+
+    __tablename__ = "product_aliases"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    alias_code: Mapped[str] = mapped_column(String(120), default="", index=True)
+    alias_model: Mapped[str] = mapped_column(String(500), default="")
+    match_rule: Mapped[str] = mapped_column(String(80), default="EXACT_SOURCE")
+    status: Mapped[str] = mapped_column(String(40), default="SUGGESTED")
+    source_sheet: Mapped[str] = mapped_column(String(120), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    product: Mapped[Product] = relationship()
 
 
 class Plant(Base):
@@ -188,6 +298,8 @@ class RawMaterialBalance(Base):
     completion_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     balance_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
     opening_stock: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
     notes: Mapped[str] = mapped_column(Text, default="")
 
     product: Mapped[Product] = relationship()
@@ -262,6 +374,9 @@ class StockMovement(Base):
     ref_type: Mapped[str] = mapped_column(String(80), default="")
     ref_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_excel: Mapped[str] = mapped_column(String(255), default="")
+    source_sheet: Mapped[str] = mapped_column(String(120), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
     remarks: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -278,6 +393,9 @@ class ProductionOrder(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     order_no: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
+    salesperson_id: Mapped[int | None] = mapped_column(ForeignKey("salespersons.id"), nullable=True)
+    sales_order_id: Mapped[int | None] = mapped_column(ForeignKey("sales_orders.id"), nullable=True, index=True)
     section: Mapped[str] = mapped_column(String(120), default="", index=True)
     schedule_qty: Mapped[float] = mapped_column(Float, default=0)
     ask_till_date: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -285,6 +403,10 @@ class ProductionOrder(Base):
     completion_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     balance_qty: Mapped[float] = mapped_column(Float, default=0)
     opening_stock: Mapped[float] = mapped_column(Float, default=0)
+    source_sheet: Mapped[str] = mapped_column(String(120), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
+    period_id: Mapped[int | None] = mapped_column(ForeignKey("reporting_periods.id"), nullable=True, index=True)
     status: Mapped[ProductionStatus] = mapped_column(
         Enum(ProductionStatus), default=ProductionStatus.planned, index=True
     )
@@ -296,6 +418,9 @@ class ProductionOrder(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     product: Mapped[Product] = relationship()
+    customer: Mapped[Customer | None] = relationship()
+    salesperson: Mapped[Salesperson | None] = relationship()
+    sales_order: Mapped[SalesOrder | None] = relationship()
     movements: Mapped[list[ProductionMovement]] = relationship(
         back_populates="production_order", cascade="all, delete-orphan"
     )
@@ -309,6 +434,8 @@ class ProductionMovement(Base):
     quantity: Mapped[float] = mapped_column(Float, default=0)
     production_date: Mapped[date] = mapped_column(Date, index=True)
     source_excel: Mapped[str] = mapped_column(String(255), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
 
     production_order: Mapped[ProductionOrder] = relationship(back_populates="movements")
 
@@ -322,15 +449,23 @@ class SalesOrder(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     order_no: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
+    order_type: Mapped[OrderType] = mapped_column(Enum(OrderType), default=OrderType.oem, index=True)
+    customer_po_no: Mapped[str] = mapped_column(String(120), default="", index=True)
+    salesperson_id: Mapped[int | None] = mapped_column(ForeignKey("salespersons.id"), nullable=True)
+    period_id: Mapped[int | None] = mapped_column(ForeignKey("reporting_periods.id"), nullable=True, index=True)
     order_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
     required_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.new, index=True)
     total_value: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     remarks: Mapped[str] = mapped_column(Text, default="")
     source_excel: Mapped[str] = mapped_column(String(255), default="")
+    source_sheet: Mapped[str] = mapped_column(String(120), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     customer: Mapped[Customer | None] = relationship()
+    salesperson: Mapped[Salesperson | None] = relationship()
     lines: Mapped[list[SalesOrderLine]] = relationship(back_populates="order", cascade="all, delete-orphan")
     dispatches: Mapped[list[Dispatch]] = relationship(back_populates="sales_order")
 
@@ -343,8 +478,11 @@ class SalesOrderLine(Base):
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
     description: Mapped[str] = mapped_column(Text, default="")
     quantity: Mapped[float] = mapped_column(Float, default=0)
+    customer_po_no: Mapped[str] = mapped_column(String(120), default="")
     unit_price: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
 
     order: Mapped[SalesOrder] = relationship(back_populates="lines")
     product: Mapped[Product | None] = relationship()
@@ -361,7 +499,9 @@ class Dispatch(Base):
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
     plant_id: Mapped[int | None] = mapped_column(ForeignKey("plants.id"), nullable=True, index=True)
     sales_order_id: Mapped[int | None] = mapped_column(ForeignKey("sales_orders.id"), nullable=True, index=True)
+    salesperson_id: Mapped[int | None] = mapped_column(ForeignKey("salespersons.id"), nullable=True)
     sales_person: Mapped[str] = mapped_column(String(120), default="")
+    period_id: Mapped[int | None] = mapped_column(ForeignKey("reporting_periods.id"), nullable=True, index=True)
     schedule_qty: Mapped[float] = mapped_column(Float, default=0)
     ask_till_date: Mapped[float | None] = mapped_column(Float, nullable=True)
     dispatched_qty: Mapped[float] = mapped_column(Float, default=0)
@@ -376,11 +516,15 @@ class Dispatch(Base):
     transport_details: Mapped[str] = mapped_column(Text, default="")
     report_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
     source_excel: Mapped[str] = mapped_column(String(255), default="")
+    source_sheet: Mapped[str] = mapped_column(String(120), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
     remarks: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     customer: Mapped[Customer | None] = relationship()
     plant: Mapped[Plant | None] = relationship()
+    salesperson: Mapped[Salesperson | None] = relationship()
     sales_order: Mapped[SalesOrder | None] = relationship(back_populates="dispatches")
     lines: Mapped[list[DispatchLine]] = relationship(back_populates="dispatch", cascade="all, delete-orphan")
 
@@ -391,12 +535,15 @@ class DispatchLine(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     dispatch_id: Mapped[int] = mapped_column(ForeignKey("dispatches.id"), index=True)
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
+    sales_order_line_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     description: Mapped[str] = mapped_column(Text, default="")
     quantity: Mapped[float] = mapped_column(Float, default=0)
     dispatch_date: Mapped[date] = mapped_column(Date, index=True)
     rate: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     weight: Mapped[float | None] = mapped_column(Float, nullable=True)
     source_excel: Mapped[str] = mapped_column(String(255), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
 
     dispatch: Mapped[Dispatch] = relationship(back_populates="lines")
     product: Mapped[Product | None] = relationship()
@@ -420,11 +567,113 @@ class Plan(Base):
     status: Mapped[str] = mapped_column(String(80), default="PENDING", index=True)
     plan_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
     source_excel: Mapped[str] = mapped_column(String(255), default="")
+    source_sheet: Mapped[str] = mapped_column(String(120), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
     remarks: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     product: Mapped[Product | None] = relationship()
     customer: Mapped[Customer | None] = relationship()
+
+
+# ---------------------------------------------------------------------------
+# Purchase requirements (shortage detection engine)
+# ---------------------------------------------------------------------------
+class PurchaseRequirement(Base):
+    """A detected shortage for a customer/order requirement.
+
+    Shortage = required - available. Category derives from product
+    source_type: MANUFACTURED -> production, TRADING -> purchase,
+    MIXED/UNKNOWN -> decision required (user picks the source).
+    Status lifecycle: Pending -> In Progress -> Ordered -> Received -> Completed.
+    """
+
+    __tablename__ = "purchase_requirements"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
+    sales_order_id: Mapped[int | None] = mapped_column(ForeignKey("sales_orders.id"), nullable=True, index=True)
+    sales_order_line_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    required_qty: Mapped[float] = mapped_column(Float, default=0)
+    available_qty: Mapped[float] = mapped_column(Float, default=0)
+    shortage_qty: Mapped[float] = mapped_column(Float, default=0)
+    category: Mapped[str] = mapped_column(String(40), default="PURCHASE", index=True)
+    # PRODUCTION | PURCHASE | DECISION
+    action: Mapped[str] = mapped_column(String(40), default="REQUIRED")
+    requirement_type: Mapped[str] = mapped_column(String(40), default="TRADING_PRODUCT", index=True)
+    status: Mapped[str] = mapped_column(String(40), default="Pending", index=True)
+    source_type: Mapped[str] = mapped_column(String(60), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    product: Mapped[Product] = relationship()
+    customer: Mapped[Customer | None] = relationship()
+    sales_order: Mapped[SalesOrder | None] = relationship()
+
+
+# ---------------------------------------------------------------------------
+# Bill of Materials (BOM)
+# ---------------------------------------------------------------------------
+class BillOfMaterial(Base):
+    """Product → Raw Material mapping. User-entered, never invented."""
+    __tablename__ = "bill_of_materials"
+    __table_args__ = (UniqueConstraint("product_id", "raw_material_product_id", "version",
+                                       name="uq_bom_product_rm_version"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    raw_material_product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    quantity_per_unit: Mapped[float] = mapped_column(Float, default=0)
+    uom: Mapped[str] = mapped_column(String(30), default="KG")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    effective_date: Mapped[date] = mapped_column(Date, default=date.today)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    product: Mapped[Product] = relationship(foreign_keys=[product_id])
+    raw_material: Mapped[Product] = relationship(foreign_keys=[raw_material_product_id])
+
+
+# ---------------------------------------------------------------------------
+# Alerts
+# ---------------------------------------------------------------------------
+class AlertType(str, enum.Enum):
+    purchase_required = "PURCHASE_REQUIRED"
+    raw_material_shortage = "RAW_MATERIAL_SHORTAGE"
+    production_material_shortage = "PRODUCTION_MATERIAL_SHORTAGE"
+    stock_shortage = "STOCK_SHORTAGE"
+    pending_po = "PENDING_PO"
+    over_fulfilled = "OVER_FULFILLED"
+    validation_warning = "VALIDATION_WARNING"
+
+
+class AlertPriority(str, enum.Enum):
+    critical = "CRITICAL"
+    high = "HIGH"
+    medium = "MEDIUM"
+    low = "LOW"
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    type: Mapped[AlertType] = mapped_column(Enum(AlertType), index=True)
+    priority: Mapped[AlertPriority] = mapped_column(
+        Enum(AlertPriority), default=AlertPriority.medium, index=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    entity_type: Mapped[str] = mapped_column(String(80), default="")
+    entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_role: Mapped[str] = mapped_column(String(60), default="")
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="OPEN", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 # ---------------------------------------------------------------------------

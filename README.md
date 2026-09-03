@@ -278,20 +278,30 @@ pip install -r requirements.txt
 python scripts\init_db.py
 ```
 
-Creates all tables and seeds the admin user (`admin / admin123`).
+Creates all tables and seeds the admin user (`admin / password`).
 
 ### 3. Migrate the source data
 
 ```powershell
-# Use the local copy already downloaded to data/
+# Legacy importer (v1, kept for reference)
 python scripts\migrate_data.py --file ..\data\Kalika_inventory__Daily Report Aug-26.xlsx
-
-# Or re-download from GCS (ADC credentials required)
-python scripts\migrate_data.py
-
-# Full refresh (wipes & re-imports; re-run init_db.py afterward to reseed admin)
-python scripts\migrate_data.py --reset
 ```
+
+**Phase 3 adds a corrected, isolated importer (v2):**
+
+```powershell
+python scripts\migrate_v2.py --fresh
+# imports into backend/data/import_batches/staging_aug_2026.sqlite (LIVE DB UNTOUCHED)
+# validates Excel vs ERP and writes reports/validation_batch_*.json
+# exit 0 -> READY_FOR_PROMOTION, exit 1 -> NOT_READY
+```
+
+`scripts/migrate_v2.py` uses `app/services/excel_parser_v2.py` (backward
+section association, row classifier, daily-date detection, text identifiers),
+`app/services/migration_v2.py` (normalized import with aliases, salespersons,
+reporting period, business rules) and `app/services/validation_v2.py`
+(reconciliation: row counts, daily totals, customer totals, identifier
+integrity, sub-total leakage, duplicates, orphans).
 
 > **Note:** `--reset` wipes the `users` table too, so always re-run `scripts\init_db.py` after a reset.
 
