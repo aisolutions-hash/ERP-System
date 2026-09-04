@@ -1,4 +1,6 @@
 """Kalika Enterprises ERP - FastAPI application entrypoint."""
+import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -7,7 +9,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
-from .database import Base, engine
+from .database import Base, engine, check_db_health
 from . import models  # noqa: F401  (register models)
 from .routers import (
     auth, users, meta, customers, suppliers, products, plants, raw_materials,
@@ -16,15 +18,20 @@ from .routers import (
     material_requirements, fulfilment,
 )
 
+log = logging.getLogger("kalika")
+
 app = FastAPI(
     title="Kalika Enterprises ERP",
     description="Manufacturing + B2B trading ERP for Kalika Enterprises.",
-    version="0.1.0",
+    version="1.0.0",
 )
 
+# CORS — allow production frontend URL + localhost for dev
+_extra_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+_cors = list({*settings.CORS_ORIGINS, *_extra_origins, "http://localhost:5173", "http://127.0.0.1:5173"})
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_cors,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -33,7 +40,19 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
-    Base.metadata.create_all(bind=engine)
+    log.info("Kalika ERP v%s starting …", settings.APP_VERSION)
+    try:
+        host = settings.database_url.split("@")[-1].split("?")[0] if "@" in settings.database_url else "local"
+        log.info("Database target: %s", host)
+    except Exception:
+        pass
+    # create_all is idempotent; non-fatal so the container starts even if the
+    # DB is briefly unreachable (health endpoint reports real status).
+    try:
+        Base.metadata.create_all(bind=engine)
+        log.info("Schema verified / tables created.")
+    except Exception as exc:
+        log.error("create_all failed (recoverable): %s", exc)
 
 
 @app.get("/", include_in_schema=False)
@@ -45,7 +64,13 @@ def root():
 
 @app.get("/health", tags=["meta"])
 def health():
-    return {"status": "ok", "app": "kalika-erp"}
+    db = check_db_health()
+    return {
+        "status": "ok" if db["status"] == "ok" else "degraded",
+        "app": "kalika-erp",
+        "version": settings.APP_VERSION,
+        "database": db,
+    }
 
 
 app.include_router(auth.router)
@@ -73,8 +98,8 @@ app.include_router(material_requirements.router)
 app.include_router(fulfilment.router)
 
 
-# Serve the built React app in production mode (frontend/dist).
-_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+# Serve the built React app in production mode (frontend/dist mounted next to backend).
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 
 def _serve_frontend(path: str):

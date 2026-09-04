@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / frontend build artifacts
+**/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Env / secrets (never bake into image)
+.env
+.env.*
+!*.env.example
+
+# Local data & reports
+backend/reports/
+backend/data/
+reports/
+data/
+
+# Local DB dumps (never ship)
+*.dump
+*.sql.gz
+*.backup
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

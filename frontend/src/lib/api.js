@@ -1,7 +1,9 @@
 import axios from 'axios'
 
+// Dev: Vite proxy forwards /api -> backend (strips prefix).
+// Prod (Cloud Run): FastAPI serves frontend + backend from same origin, no /api prefix.
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: import.meta.env.PROD ? '/' : '/api',
 })
 
 api.interceptors.request.use((config) => {

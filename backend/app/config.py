@@ -13,18 +13,49 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     API_PREFIX: str = "/api"
 
-    DATABASE_URL: str = "postgresql+psycopg2://kalika_app:kalika@127.0.0.1:5432/kalika_erp"
+    # ---- Database ----
+    # Cloud Run + Cloud SQL: DATABASE_URL is set via env var (Cloud SQL Auth Proxy socket).
+    # Local dev: falls back to local PostgreSQL via .env or local default.
+    DATABASE_URL: str = ""
+
+    # ---- Cloud SQL (populated by Cloud Run env or .env for local dev) ----
+    CLOUD_SQL_CONNECTION_NAME: str = ""
+    CLOUD_SQL_DB_NAME: str = "kalika_erp"
+    CLOUD_SQL_DB_USER: str = "kalika_app"
+    CLOUD_SQL_DB_PASS: str = ""
+
+    # ---- JWT ----
     JWT_SECRET: str = "change-me-in-production"
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 480
     ACCESS_TOKEN_NAME: str = "kalika_access"
 
+    # ---- GCS ----
     GCS_BUCKET: str = "kalisoftai-datahub"
     GCS_EXCEL_FILE: str = "Kalika_inventory/Daily Report Aug-26.xlsx"
     GOOGLE_APPLICATION_CREDENTIALS: str | None = None
     REPORT_DIR: Path = BASE_DIR / "reports"
 
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+    @property
+    def database_url(self) -> str:
+        """Resolve DATABASE_URL with Cloud SQL socket support."""
+        # 1. Explicit DATABASE_URL env var takes full precedence (local dev or direct connection)
+        if self.DATABASE_URL:
+            return self.DATABASE_URL
+
+        # 2. Cloud SQL Auth Proxy socket (Cloud Run / gcloud proxy)
+        #    Format: postgresql+psycopg2://user:pass@localhost/dbname?host=/cloudsql/INSTANCE_CONNECTION_NAME
+        if self.CLOUD_SQL_CONNECTION_NAME and self.CLOUD_SQL_DB_PASS:
+            return (
+                f"postgresql+psycopg2://{self.CLOUD_SQL_DB_USER}:{self.CLOUD_SQL_DB_PASS}"
+                f"@localhost/{self.CLOUD_SQL_DB_NAME}"
+                f"?host=/cloudsql/{self.CLOUD_SQL_CONNECTION_NAME}"
+            )
+
+        # 3. Fallback — local dev PostgreSQL (will fail in production, that's intentional)
+        return "postgresql+psycopg2://kalika_app:kalika_116881@127.0.0.1:5432/kalika_erp"
 
     @property
     def report_dir(self) -> Path:
