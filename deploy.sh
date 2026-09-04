@@ -72,14 +72,8 @@ fi
 
 echo ""
 echo "=== 3/6  Building & pushing image (frontend built inside Docker) ==="
-gcloud builds submit --config - \
-  --substitutions="_REGION=${REGION},_REPO=${REPO},_TAG=${TAG},_PROJECT=${PROJECT_ID}" . <<'CLOUDBUILD'
-steps:
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/app:${_TAG}', '.']
-images:
-  - '${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/app:${_TAG}'
-CLOUDBUILD
+gcloud builds submit --config=cloudbuild.yaml \
+  --substitutions="_REGION=${REGION},_REPO=${REPO},_TAG=${TAG},_PROJECT=${PROJECT_ID}" .
 
 echo ""
 echo "=== 4/6  Locating Cloud SQL password from Secret Manager ==="
