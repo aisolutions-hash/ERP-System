@@ -1,5 +1,6 @@
 """Application configuration loaded from environment / .env file."""
 from pathlib import Path
+from urllib.parse import quote_plus
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -49,7 +50,7 @@ class Settings(BaseSettings):
         #    Format: postgresql+psycopg2://user:pass@localhost/dbname?host=/cloudsql/INSTANCE_CONNECTION_NAME
         if self.CLOUD_SQL_CONNECTION_NAME and self.CLOUD_SQL_DB_PASS:
             return (
-                f"postgresql+psycopg2://{self.CLOUD_SQL_DB_USER}:{self.CLOUD_SQL_DB_PASS}"
+                f"postgresql+psycopg2://{quote_plus(self.CLOUD_SQL_DB_USER)}:{quote_plus(self.CLOUD_SQL_DB_PASS)}"
                 f"@localhost/{self.CLOUD_SQL_DB_NAME}"
                 f"?host=/cloudsql/{self.CLOUD_SQL_CONNECTION_NAME}"
             )
