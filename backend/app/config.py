@@ -59,8 +59,15 @@ class Settings(BaseSettings):
 
     @property
     def report_dir(self) -> Path:
-        self.REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        return self.REPORT_DIR
+        """Resolve REPORT_DIR, falling back to a writable dir if the configured
+        path cannot be created (e.g. Cloud Run non-root user hitting root paths)."""
+        try:
+            self.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+            return self.REPORT_DIR
+        except PermissionError:
+            fallback = Path("/tmp/reports")
+            fallback.mkdir(parents=True, exist_ok=True)
+            return fallback
 
 
 settings = Settings()
