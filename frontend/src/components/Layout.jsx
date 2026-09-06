@@ -5,6 +5,7 @@ import {
   Truck, Users, Package, FileDown, ShieldCheck, LogOut, ListChecks,
   AlertTriangle, Store, BellRing, ClipboardList, GitBranch, LayoutGrid,
   ChevronsLeft, ChevronsRight, Menu, X, Layers, ArrowLeftRight, FileSpreadsheet, PackagePlus,
+  ScanLine, Barcode, Printer, Scan,
 } from 'lucide-react'
 import api from '../lib/api'
 import { useAuth } from '../context/AuthContext'
@@ -40,6 +41,17 @@ const SECTIONS = [
       { to: '/requirements', label: 'Requirements', icon: AlertTriangle },
       { to: '/material-requirements', label: 'Material Req', icon: ClipboardList },
       { to: '/fulfilment', label: 'Fulfilment', icon: LayoutGrid },
+    ],
+  },
+  {
+    label: 'Scan & Print',
+    items: [
+      { to: '/scan/inward', label: 'Scan Inward', icon: ScanLine },
+      { to: '/scan/outward', label: 'Scan Outward', icon: ScanLine },
+      { to: '/scan/production', label: 'Scan Production', icon: ScanLine },
+      { to: '/product-scan', label: 'Product Scan (Camera)', icon: Scan },
+      { to: '/labels', label: 'Print Labels', icon: Printer },
+      { to: '/scan-analytics', label: 'Scan Analytics', icon: Barcode },
     ],
   },
   {
@@ -79,6 +91,12 @@ const TITLE_MAP = {
   '/suppliers': { title: 'Suppliers', sub: 'Supplier master' },
   '/reports': { title: 'Reports', sub: 'Business summaries & exports' },
   '/users': { title: 'Users', sub: 'User administration' },
+  '/scan/inward': { title: 'Scan Inward', sub: 'Goods receipt via barcode scanner' },
+  '/scan/outward': { title: 'Scan Outward', sub: 'Goods issue / dispatch via barcode' },
+  '/scan/production': { title: 'Scan Production', sub: 'Record production output via barcode' },
+  '/product-scan': { title: 'Product Scan (Camera)', sub: 'Mobile camera product recognition + chat' },
+  '/labels': { title: 'Print Labels', sub: 'TSC TTP-247 / ZPL label printing' },
+  '/scan-analytics': { title: 'Scan Analytics', sub: 'Scan activity & marketing insights' },
 }
 
 export default function Layout() {

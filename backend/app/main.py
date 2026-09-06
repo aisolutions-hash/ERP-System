@@ -15,7 +15,7 @@ from .routers import (
     auth, users, meta, customers, suppliers, products, plants, raw_materials,
     purchases, inventory, production, orders, dispatch, plans, dashboard, reports,
     requirements, salespersons, local_orders, bom, alerts,
-    material_requirements, fulfilment,
+    material_requirements, fulfilment, barcodes,
 )
 
 log = logging.getLogger("kalika")
@@ -96,6 +96,7 @@ app.include_router(bom.router)
 app.include_router(alerts.router)
 app.include_router(material_requirements.router)
 app.include_router(fulfilment.router)
+app.include_router(barcodes.router)
 
 
 # Serve the built React app in production mode (frontend/dist mounted next to backend).

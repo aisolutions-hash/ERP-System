@@ -1,4 +1,15 @@
-"""Dashboard analytics: KPIs, trends, and charts."""
+"""Dashboard analytics: KPIs, trends, and charts.
+
+Phase 7 additions:
+  - /sales-by-customer      → top customers by dispatch value (marketing)
+  - /sales-by-salesperson   → salesperson leaderboard
+  - /category-breakdown     → dispatch / production mix by category
+  - /order-type-mix         → OEM vs TRADING vs LOCAL mix
+  - /top-products           → top-selling products (sales & marketing signal)
+  - /revenue-trend          → daily revenue (dispatch value) trend
+  - /open-pipeline-value    → total open-order value by status
+  - /scanner-activity       → scan volume (powered by /barcodes/scan-events/analytics)
+"""
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -8,11 +19,11 @@ from sqlalchemy.orm import Session
 from ..auth import CurrentUser
 from ..database import get_db
 from ..models import (
-    Customer, Dispatch, DispatchLine, Inventory, OrderStatus, Plant, Product,
-    ProductCategory, ProductionMovement, ProductionOrder, PurchaseOrder,
-    RawMaterialBalance, SalesOrder, Supplier,
+    Customer, Dispatch, DispatchLine, Inventory, OrderStatus, OrderType,
+    Plant, Product, ProductCategory, ProductionMovement, ProductionOrder,
+    PurchaseOrder, RawMaterialBalance, SalesOrder, Salesperson, Supplier,
 )
-from datetime import date
+from datetime import date, datetime, timedelta
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -67,6 +78,19 @@ def summary(
     product_count = db.scalar(select(func.count()).select_from(Product)) or 0
     store_items = db.scalar(select(func.count()).select_from(Product).where(Product.category == ProductCategory.store)) or 0
 
+    # Phase 7: sales / marketing KPI additions
+    open_pipeline_value = db.scalar(
+        select(func.coalesce(func.sum(SalesOrder.total_value), 0))
+        .where(SalesOrder.status.in_([
+            OrderStatus.new, OrderStatus.confirmed, OrderStatus.in_production,
+            OrderStatus.ready, OrderStatus.dispatched,
+        ]))
+    ) or 0
+    dispatched_revenue = db.scalar(
+        select(func.coalesce(func.sum(SalesOrder.total_value), 0))
+        .where(SalesOrder.status.in_([OrderStatus.dispatched, OrderStatus.completed]))
+    ) or 0
+
     return {
         "report_date": rd.isoformat(),
         "total_orders": total_orders, "new_orders_today": new_today, "pending_orders": pending,
@@ -81,6 +105,12 @@ def summary(
         "dispatch_scheduled": disp_sched, "dispatch_done": disp_done, "dispatch_pending": disp_pending,
         "supplier_count": supplier_count, "customer_count": customer_count,
         "plant_count": plant_count, "product_count": product_count, "store_items": store_items,
+        # New sales / marketing KPIs
+        "open_pipeline_value": float(open_pipeline_value),
+        "dispatched_revenue": float(dispatched_revenue),
+        "fulfilment_pct": round(
+            (dispatched_revenue / (dispatched_revenue + open_pipeline_value)) * 100, 2
+        ) if (dispatched_revenue + open_pipeline_value) > 0 else 0.0,
     }
 
 
@@ -155,8 +185,9 @@ def raw_material_stock(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
 
 
 @router.get("/daily-trends")
-def daily_trends(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
-    """Daily dispatch & production output trends (last 30 distinct days)."""
+def daily_trends(db: Annotated[Session, Depends(get_db)], _: CurrentUser,
+                 days: int = Query(30, ge=7, le=180)):
+    """Daily dispatch + production + revenue trends."""
     d_rows = db.execute(
         select(DispatchLine.dispatch_date, func.sum(DispatchLine.quantity))
         .group_by(DispatchLine.dispatch_date).order_by(DispatchLine.dispatch_date)
@@ -167,11 +198,19 @@ def daily_trends(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
     ).all()
     by = {}
     for dd, q in d_rows:
-        by.setdefault(dd.isoformat(), {"dispatch": 0.0, "production": 0.0})["dispatch"] += float(q)
+        by.setdefault(dd.isoformat(), {"dispatch": 0.0, "production": 0.0, "revenue": 0.0})["dispatch"] += float(q)
     for pd, q in p_rows:
-        by.setdefault(pd.isoformat(), {"dispatch": 0.0, "production": 0.0})["production"] += float(q)
-    items = [{"date": k, **v} for k, v in sorted(by.items())[-30:]]
-    return {"items": items}
+        by.setdefault(pd.isoformat(), {"dispatch": 0.0, "production": 0.0, "revenue": 0.0})["production"] += float(q)
+    # Revenue from DispatchLine.rate * quantity
+    rev_rows = db.execute(
+        select(DispatchLine.dispatch_date,
+               func.coalesce(func.sum(DispatchLine.rate * DispatchLine.quantity), 0))
+        .group_by(DispatchLine.dispatch_date)
+    ).all()
+    for dd, r in rev_rows:
+        by.setdefault(dd.isoformat(), {"dispatch": 0.0, "production": 0.0, "revenue": 0.0})["revenue"] += float(r)
+    items = [{"date": k, **v} for k, v in sorted(by.items())][-days:]
+    return {"items": items, "days": days}
 
 
 @router.get("/low-stock-list")
@@ -189,3 +228,217 @@ def low_stock_list(db: Annotated[Session, Depends(get_db)], _: CurrentUser, limi
             })
     items.sort(key=lambda x: x["current_stock"])
     return {"items": items[:limit]}
+
+
+# ============================================================================
+# PHASE 7: SALES & MARKETING ANALYTICS
+# ============================================================================
+
+@router.get("/sales-by-customer")
+def sales_by_customer(db: Annotated[Session, Depends(get_db)], _: CurrentUser,
+                      days: int = Query(90, ge=1, le=365), limit: int = Query(10, ge=1, le=50)):
+    """Top customers by dispatch value (last N days).
+
+    Powers: customer leaderboard, account-management prioritisation,
+    marketing campaign targeting."""
+    since = date.today() - timedelta(days=days)
+    # Sum DispatchLine.quantity * rate per customer
+    rows = db.execute(
+        select(
+            Customer.id, Customer.name, Customer.code,
+            func.coalesce(func.sum(DispatchLine.quantity), 0).label("qty"),
+            func.coalesce(func.sum(DispatchLine.rate * DispatchLine.quantity), 0).label("revenue"),
+            func.count(func.distinct(Dispatch.id)).label("dispatches"),
+        )
+        .join(Dispatch, Dispatch.customer_id == Customer.id)
+        .join(DispatchLine, DispatchLine.dispatch_id == Dispatch.id)
+        .where(Dispatch.dispatch_date >= since)
+        .group_by(Customer.id, Customer.name, Customer.code)
+        .order_by(func.coalesce(func.sum(DispatchLine.rate * DispatchLine.quantity), 0).desc())
+        .limit(limit)
+    ).all()
+    items = [
+        {
+            "customer_id": r.id, "customer": r.name, "code": r.code,
+            "qty": float(r.qty or 0),
+            "revenue": float(r.revenue or 0),
+            "dispatches": int(r.dispatches or 0),
+        }
+        for r in rows
+    ]
+    return {"items": items, "days": days, "total_customers_shown": len(items)}
+
+
+@router.get("/sales-by-salesperson")
+def sales_by_salesperson(db: Annotated[Session, Depends(get_db)], _: CurrentUser,
+                         days: int = Query(90, ge=1, le=365)):
+    """Salesperson leaderboard — qty dispatched + revenue per owner."""
+    since = date.today() - timedelta(days=days)
+    rows = db.execute(
+        select(
+            Salesperson.id, Salesperson.name,
+            func.coalesce(func.sum(DispatchLine.quantity), 0).label("qty"),
+            func.coalesce(func.sum(DispatchLine.rate * DispatchLine.quantity), 0).label("revenue"),
+            func.count(func.distinct(Dispatch.id)).label("dispatches"),
+        )
+        .join(Dispatch, Dispatch.salesperson_id == Salesperson.id)
+        .join(DispatchLine, DispatchLine.dispatch_id == Dispatch.id)
+        .where(Dispatch.dispatch_date >= since)
+        .group_by(Salesperson.id, Salesperson.name)
+        .order_by(func.coalesce(func.sum(DispatchLine.rate * DispatchLine.quantity), 0).desc())
+    ).all()
+    items = [
+        {
+            "salesperson_id": r.id, "name": r.name,
+            "qty": float(r.qty or 0),
+            "revenue": float(r.revenue or 0),
+            "dispatches": int(r.dispatches or 0),
+        }
+        for r in rows
+    ]
+    return {"items": items, "days": days}
+
+
+@router.get("/category-breakdown")
+def category_breakdown(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
+    """Dispatch + production mix by product category. Useful for SKU rationalisation."""
+    rows = db.execute(
+        select(
+            Product.category,
+            func.coalesce(func.sum(DispatchLine.quantity), 0).label("dispatched_qty"),
+            func.count(func.distinct(DispatchLine.id)).label("dispatch_lines"),
+        )
+        .join(DispatchLine, DispatchLine.product_id == Product.id, isouter=True)
+        .group_by(Product.category)
+    ).all()
+    items = [
+        {
+            "category": r.category.value if r.category else "unknown",
+            "dispatched_qty": float(r.dispatched_qty or 0),
+            "dispatch_lines": int(r.dispatch_lines or 0),
+        }
+        for r in rows
+    ]
+    return {"items": items}
+
+
+@router.get("/order-type-mix")
+def order_type_mix(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
+    """Order count + value by type (OEM / TRADING / MANUFACTURING / LOCAL).
+
+    Drives marketing campaign targeting (e.g., focus on TRADING repeat buyers)."""
+    types = [t.value for t in OrderType]
+    counts = {t: {"count": 0, "value": 0.0} for t in types}
+    rows = db.execute(
+        select(SalesOrder.order_type,
+               func.count().label("c"),
+               func.coalesce(func.sum(SalesOrder.total_value), 0).label("v"))
+        .group_by(SalesOrder.order_type)
+    ).all()
+    for r in rows:
+        if r.order_type:
+            counts[r.order_type.value] = {"count": int(r.c), "value": float(r.v)}
+    return {"items": [{"type": k, **v} for k, v in counts.items()]}
+
+
+@router.get("/top-products")
+def top_products(db: Annotated[Session, Depends(get_db)], _: CurrentUser,
+                 days: int = Query(90, ge=1, le=365), limit: int = Query(10, ge=1, le=50)):
+    """Top-selling products by dispatched qty + revenue (sales & marketing signal)."""
+    since = date.today() - timedelta(days=days)
+    rows = db.execute(
+        select(
+            Product.id, Product.item_code, Product.model, Product.category,
+            func.coalesce(func.sum(DispatchLine.quantity), 0).label("qty"),
+            func.coalesce(func.sum(DispatchLine.rate * DispatchLine.quantity), 0).label("revenue"),
+            func.coalesce(func.sum(DispatchLine.weight), 0).label("weight_kg"),
+        )
+        .join(DispatchLine, DispatchLine.product_id == Product.id)
+        .join(Dispatch, DispatchLine.dispatch_id == Dispatch.id)
+        .where(Dispatch.dispatch_date >= since)
+        .group_by(Product.id, Product.item_code, Product.model, Product.category)
+        .order_by(func.coalesce(func.sum(DispatchLine.quantity), 0).desc())
+        .limit(limit)
+    ).all()
+    items = [
+        {
+            "product_id": r.id, "item_code": r.item_code, "model": r.model,
+            "category": r.category.value if r.category else None,
+            "qty": float(r.qty or 0),
+            "revenue": float(r.revenue or 0),
+            "weight_kg": float(r.weight_kg or 0),
+        }
+        for r in rows
+    ]
+    return {"items": items, "days": days}
+
+
+@router.get("/open-pipeline-value")
+def open_pipeline_value(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
+    """Open-order value broken down by status — directly visible to sales managers."""
+    statuses = [OrderStatus.new, OrderStatus.confirmed, OrderStatus.in_production,
+                OrderStatus.ready, OrderStatus.dispatched, OrderStatus.completed]
+    items = []
+    for s in statuses:
+        v = db.scalar(
+            select(func.coalesce(func.sum(SalesOrder.total_value), 0))
+            .where(SalesOrder.status == s)
+        ) or 0
+        c = db.scalar(select(func.count()).select_from(SalesOrder).where(SalesOrder.status == s)) or 0
+        items.append({"status": s.value, "count": int(c), "value": float(v)})
+    return {"items": items}
+
+
+@router.get("/revenue-trend")
+def revenue_trend(db: Annotated[Session, Depends(get_db)], _: CurrentUser,
+                  days: int = Query(60, ge=14, le=365)):
+    """Daily dispatch revenue trend (DispatchLine.rate * quantity)."""
+    since = date.today() - timedelta(days=days)
+    rows = db.execute(
+        select(DispatchLine.dispatch_date.label("d"),
+               func.coalesce(func.sum(DispatchLine.rate * DispatchLine.quantity), 0).label("revenue"),
+               func.coalesce(func.sum(DispatchLine.quantity), 0).label("qty"),
+               func.coalesce(func.sum(DispatchLine.weight), 0).label("weight"))
+        .where(DispatchLine.dispatch_date >= since)
+        .group_by(DispatchLine.dispatch_date)
+        .order_by(DispatchLine.dispatch_date)
+    ).all()
+    items = [{"date": r.d.isoformat(), "revenue": float(r.revenue or 0),
+              "qty": float(r.qty or 0), "weight_kg": float(r.weight or 0)} for r in rows]
+    total = round(sum(i["revenue"] for i in items), 2)
+    return {"items": items, "days": days, "total_revenue": total}
+
+
+@router.get("/fulfilment-health")
+def fulfilment_health(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
+    """One-shot health card for sales dashboard:
+       - Open orders count + value
+       - In-production count + value
+       - Ready-to-dispatch count + value
+       - Stuck orders (>14 days in current status)
+    """
+    from sqlalchemy import or_
+    fourteen_ago = date.today() - timedelta(days=14)
+    stuck = db.scalar(
+        select(func.count()).select_from(SalesOrder)
+        .where(or_(
+            (SalesOrder.order_date <= fourteen_ago) & (SalesOrder.status.in_([
+                OrderStatus.new, OrderStatus.confirmed,
+            ])),
+            (SalesOrder.order_date <= fourteen_ago) & (SalesOrder.status == OrderStatus.in_production),
+        ))
+    ) or 0
+    groups = {
+        "open": [OrderStatus.new, OrderStatus.confirmed],
+        "in_production": [OrderStatus.in_production],
+        "ready": [OrderStatus.ready],
+        "dispatched": [OrderStatus.dispatched],
+    }
+    out = {}
+    for k, statuses in groups.items():
+        c = db.scalar(select(func.count()).select_from(SalesOrder)
+                      .where(SalesOrder.status.in_(statuses))) or 0
+        v = db.scalar(select(func.coalesce(func.sum(SalesOrder.total_value), 0))
+                      .where(SalesOrder.status.in_(statuses))) or 0
+        out[k] = {"count": int(c), "value": float(v)}
+    return {"groups": out, "stuck_orders": int(stuck)}

@@ -136,6 +136,13 @@ class ProductBase(BaseModel):
     category: ProductCategory = ProductCategory.store
     uom: str = "Each"
     min_stock_level: Optional[float] = None
+    barcode: str = ""
+    barcode_format: str = "CODE128"
+    weight_per_unit: Optional[float] = None
+    weight_uom: str = "KG"
+    standard_rate: Optional[float] = None
+    hsn_code: str = ""
+    gst_rate: Optional[float] = None
 
 
 class ProductCreate(ProductBase):
@@ -149,6 +156,13 @@ class ProductUpdate(BaseModel):
     category: Optional[ProductCategory] = None
     uom: Optional[str] = None
     min_stock_level: Optional[float] = None
+    barcode: Optional[str] = None
+    barcode_format: Optional[str] = None
+    weight_per_unit: Optional[float] = None
+    weight_uom: Optional[str] = None
+    standard_rate: Optional[float] = None
+    hsn_code: Optional[str] = None
+    gst_rate: Optional[float] = None
     is_active: Optional[bool] = None
 
 
@@ -156,6 +170,7 @@ class ProductOut(ProductBase, ORMModel):
     id: int
     is_active: bool
     created_at: datetime
+    qr_data: str = ""
 
 
 class PlantBase(BaseModel):

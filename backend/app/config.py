@@ -34,8 +34,10 @@ class Settings(BaseSettings):
     # ---- GCS ----
     GCS_BUCKET: str = "kalisoftai-datahub"
     GCS_EXCEL_FILE: str = "Kalika_inventory/Daily Report Aug-26.xlsx"
+    GCS_SECURE_BUCKET: str = "kalika_enterprises"
     GOOGLE_APPLICATION_CREDENTIALS: str | None = None
     REPORT_DIR: Path = BASE_DIR / "reports"
+    LABEL_SPOOL_DIR: Path = BASE_DIR / "label_spool"  # TSC driver watches this on Windows
 
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 

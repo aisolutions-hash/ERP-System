@@ -21,6 +21,12 @@ import Suppliers from './pages/Suppliers'
 import Reports from './pages/Reports'
 import Users from './pages/Users'
 import StockMovements from './pages/StockMovements'
+import ScanInward from './pages/ScanInward'
+import ScanOutward from './pages/ScanOutward'
+import ScanProduction from './pages/ScanProduction'
+import Labels from './pages/Labels'
+import ScanAnalytics from './pages/ScanAnalytics'
+import ProductScan from './pages/ProductScan'
 
 function RequireAuth({ children }) {
   const { user } = useAuth()
@@ -61,6 +67,12 @@ function App() {
             <Route path="suppliers" element={<Suppliers />} />
             <Route path="reports" element={<Reports />} />
             <Route path="users" element={<Users />} />
+            <Route path="scan/inward" element={<ScanInward />} />
+            <Route path="scan/outward" element={<ScanOutward />} />
+            <Route path="scan/production" element={<ScanProduction />} />
+            <Route path="labels" element={<Labels />} />
+            <Route path="scan-analytics" element={<ScanAnalytics />} />
+            <Route path="product-scan" element={<ProductScan />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -242,7 +242,66 @@ class Product(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    # Phase 7: barcode + traceability fields (all nullable to remain backward-compatible)
+    barcode: Mapped[str] = mapped_column(String(80), default="", index=True)
+    barcode_format: Mapped[str] = mapped_column(String(30), default="CODE128")
+    qr_data: Mapped[str] = mapped_column(Text, default="")
+    weight_per_unit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    weight_uom: Mapped[str] = mapped_column(String(10), default="KG")
+    standard_rate: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    hsn_code: Mapped[str] = mapped_column(String(20), default="")
+    gst_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     stock: Mapped[list[Inventory]] = relationship(back_populates="product", cascade="all, delete-orphan")
+
+
+class PrinterConfig(Base):
+    """Per-workstation printer / scale configuration. Generic enough to support
+    TSC TTP-244/247/345 (TSPL), Zebra (ZPL), EPL, ESC/POS, or generic RAW."""
+    __tablename__ = "printer_configs"
+    __table_args__ = (UniqueConstraint("workstation", "name", name="uq_printer_workstation_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workstation: Mapped[str] = mapped_column(String(80), default="DEFAULT", index=True)
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    kind: Mapped[str] = mapped_column(String(20), default="LABEL")  # LABEL | RECEIPT | SCALE_PRINTER
+    protocol: Mapped[str] = mapped_column(String(20), default="TSPL")
+    # TSPL | ZPL | EPL | ESCPOS | RAW
+    connection: Mapped[str] = mapped_column(String(20), default="USB")
+    # USB | NETWORK | BLUETOOTH | CUPS
+    host: Mapped[str] = mapped_column(String(120), default="")
+    port: Mapped[int] = mapped_column(Integer, default=9100)
+    device_path: Mapped[str] = mapped_column(String(255), default="")
+    label_width_mm: Mapped[float] = mapped_column(Float, default=104.0)
+    label_height_mm: Mapped[float] = mapped_column(Float, default=50.0)
+    dpi: Mapped[int] = mapped_column(Integer, default=203)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ScanEvent(Base):
+    """Audit log for every barcode scan (inward/outward/production/manual).
+    Useful for marketing analytics (who scans what, how often, dead time)."""
+    __tablename__ = "scan_events"
+    __table_args__ = (Index("ix_scan_event_date_product", "scanned_at", "product_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(30), index=True)
+    # INWARD | OUTWARD | PRODUCTION | MOVEMENT | LABEL_PRINT
+    direction: Mapped[str] = mapped_column(String(10), default="IN")
+    # IN | OUT
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), index=True)
+    ref_type: Mapped[str] = mapped_column(String(40), default="")
+    ref_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    barcode_value: Mapped[str] = mapped_column(String(120), default="", index=True)
+    quantity: Mapped[float] = mapped_column(Float, default=0)
+    weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    device_source: Mapped[str] = mapped_column(String(40), default="USB_HID")
+    # USB_HID | SCANBOT | WEBCAM | MANUAL
+    scanned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
 class ProductAlias(Base):
