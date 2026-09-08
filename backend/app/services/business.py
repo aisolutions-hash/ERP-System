@@ -18,8 +18,8 @@ from sqlalchemy.orm import Session
 
 from ..models import (
     Alert, AlertPriority, AlertType, BillOfMaterial, Dispatch, DispatchLine,
-    Inventory, OrderStatus, Product, ProductSourceType, PurchaseRequirement,
-    SalesOrder, SalesOrderLine,
+    Inventory, OrderStatus, OrderType, Product, ProductSourceType,
+    PurchaseRequirement, SalesOrder, SalesOrderLine,
 )
 
 
@@ -28,6 +28,21 @@ def inventory_map(db: Session) -> dict[int, float]:
     rows = db.execute(
         select(Inventory.product_id, func.sum(Inventory.current_stock))
         .where(Inventory.plant_id.is_(None))
+        .group_by(Inventory.product_id)
+    ).all()
+    return {pid: float(q or 0) for pid, q in rows}
+
+
+def all_location_stock(db: Session) -> dict[int, float]:
+    """product_id -> total owned stock across Main Store + ALL plants.
+
+    Used by the LOCAL order shortage engine: a genuine supply shortage only
+    exists when the company does not own enough stock anywhere. Stock sitting at
+    the wrong location is a repositioning need (Main Store -> Dispatch transfer),
+    NOT a purchase/production requirement.
+    """
+    rows = db.execute(
+        select(Inventory.product_id, func.sum(Inventory.current_stock))
         .group_by(Inventory.product_id)
     ).all()
     return {pid: float(q or 0) for pid, q in rows}
@@ -164,6 +179,7 @@ def ensure_alert(
     entity_type: str = "",
     entity_id: int | None = None,
     target_role: str = "",
+    commit: bool = True,
 ) -> Alert | None:
     """Create a new OPEN alert unless an identical OPEN one already exists
     for the same type+entity (dedupe protection)."""
@@ -180,8 +196,9 @@ def ensure_alert(
         entity_type=entity_type, entity_id=entity_id, target_role=target_role,
     )
     db.add(alert)
-    db.commit()
-    db.refresh(alert)
+    if commit:
+        db.commit()
+        db.refresh(alert)
     return alert
 
 
@@ -249,6 +266,163 @@ def upsert_purchase_requirement(
         db.commit()
         db.refresh(pr)
     return pr
+
+
+# ---------------------------------------------------------------------------
+# 6H: Purchase / Production shortage engine (auto-create + alerts)
+# ---------------------------------------------------------------------------
+# Manual, user-driven status lifecycle (never forced by the engine).
+# "Resolved" is the engine's terminal marker for stale LOCAL orders whose
+# genuine shortage has been covered by stock repositioning (auto-closed).
+REQUIREMENT_STATUSES = ("Pending", "In Progress", "Ordered", "Received", "Completed", "Resolved")
+
+# Alert types used for product-level shortages (finished / trading lines).
+_PRODUCT_SHORTAGE_ALERT_TYPES = (
+    AlertType.purchase_required.value,
+    AlertType.production_material_shortage.value,
+)
+
+
+def _shortage_meta(product: Product):
+    """source_type -> (requirement category, requirement_type, alert type,
+    target role). MIXED/UNKNOWN -> None (business decision, no auto alert)."""
+    src = product.source_type
+    if src == ProductSourceType.trading:
+        return ("PURCHASE", "TRADING_PRODUCT", AlertType.purchase_required.value, "purchase")
+    if src == ProductSourceType.manufactured:
+        return ("PRODUCTION", "RAW_MATERIAL", AlertType.production_material_shortage.value, "production")
+    return None
+
+
+def resolve_shortage_alerts(db: Session, valid: set[tuple[str, int]]) -> int:
+    """Close OPEN product-level shortage alerts that no longer describe a
+    real shortage (kept when the shortage is still live). Returns count."""
+    now = datetime.now(timezone.utc)
+    rows = db.scalars(
+        select(Alert).where(
+            Alert.status == "OPEN",
+            Alert.type.in_(_PRODUCT_SHORTAGE_ALERT_TYPES),
+            Alert.entity_type == "product",
+        ).order_by(Alert.id)
+    ).all()
+    resolved = 0
+    for a in rows:
+        if (a.type.value if hasattr(a.type, "value") else a.type, a.entity_id) in valid:
+            continue
+        a.status = "RESOLVED"
+        a.is_read = True
+        a.resolved_at = now
+        resolved += 1
+    return resolved
+
+
+def sync_purchase_shortages(db: Session, commit: bool = True) -> dict:
+    """Reconcile purchase/production requirements + alert the purchase team
+    for the CURRENT fulfilment state.
+
+    For every non-cancelled order line:
+      balance       = ordered - dispatched
+      shortage      = balance - available stock       (real inventory)
+    Shortage <= 0 -> no requirement, no alert.
+    Shortage  > 0 -> upsert PurchaseRequirement row (dedupe-safe) and ensure a
+                     single OPEN alert per product (dedupe-safe).
+
+    Stale OPEN alerts for products whose shortage has cleared are auto-resolved
+    so the Alerts centre never shows an outdated requirement. Requirement status
+    is user-controlled and never auto-advanced (exception: stale Pending rows on
+    LOCAL orders whose owned stock now covers the line are auto-closed as
+    "Resolved"). No commit until the end.
+    """
+    inv = inventory_map(db)
+    owned = all_location_stock(db)
+    disp = _dispatch_by_order(db)
+
+    rows = db.execute(
+        select(SalesOrder, SalesOrderLine)
+        .join(SalesOrderLine, SalesOrderLine.order_id == SalesOrder.id)
+        .join(Product, Product.id == SalesOrderLine.product_id, isouter=True)
+        .where(SalesOrder.status != OrderStatus.cancelled)
+    ).all()
+
+    created = 0
+    alerts = 0
+    valid: set[tuple[str, int]] = set()
+
+    for o, ln in rows:
+        if not ln.product_id or ln.product is None:
+            continue
+        p = ln.product
+        ordered = float(ln.quantity or 0)
+        if ordered <= 0:
+            continue
+        balance = ordered - float(disp.get(o.id, 0.0))
+        if balance <= 0:
+            continue
+        if o.order_type == OrderType.local:
+            # LOCAL orders: only a genuine supply shortage (owned stock across
+            # Main Store + all plants is short) creates a purchase/production
+            # requirement. Stock that merely sits at the wrong location is
+            # handled by the Main Store -> Dispatch transfer flow, NOT here.
+            available = owned.get(p.id, 0.0)
+        else:
+            available = inv.get(p.id, 0.0)
+        shortage = balance - available
+        if shortage <= 0:
+            continue
+        meta = _shortage_meta(p)
+        if meta is None:
+            continue  # DECISION required - surfaced in the requirement view
+        cat, rtype, alert_type, role = meta
+        valid.add((alert_type, p.id))
+
+        pr = upsert_purchase_requirement(
+            db, product_id=p.id, required_qty=balance, available_qty=available,
+            shortage_qty=shortage, category=cat, requirement_type=rtype,
+            customer_id=o.customer_id, sales_order_id=o.id,
+            sales_order_line_id=ln.id, source_type=(p.source_type.value if p.source_type else "UNKNOWN"),
+            notes=f"Shortage for {o.order_no}", commit=False,
+        )
+        if pr is not None and getattr(pr, "_just_created", False):
+            created += 1
+
+        label = p.model or p.item_code or f"product #{p.id}"
+        if alert_type == AlertType.purchase_required.value:
+            message = f"Purchase Required: {label} - {shortage:g} Qty"
+        else:
+            message = f"Production Required: {label} - {shortage:g} Qty"
+        ensure_alert(
+            db, alert_type, message, priority="HIGH",
+            entity_type="product", entity_id=p.id, target_role=role, commit=False,
+        )
+        alerts += 1
+
+    resolved = resolve_shortage_alerts(db, valid)
+
+    # Auto-close stale Pending requirements on LOCAL orders whose genuine
+    # shortage has since been covered (e.g. stock repositioned by transfer).
+    now = datetime.now(timezone.utc)
+    closed_reqs = 0
+    for pr, ln in db.execute(
+        select(PurchaseRequirement, SalesOrderLine)
+        .join(SalesOrderLine, PurchaseRequirement.sales_order_line_id == SalesOrderLine.id)
+        .join(SalesOrder, SalesOrderLine.order_id == SalesOrder.id)
+        .where(
+            SalesOrder.order_type == OrderType.local,
+            PurchaseRequirement.status == "Pending",
+            PurchaseRequirement.product_id.is_not(None),
+        )
+    ).all():
+        line_balance = float(ln.quantity or 0) - float(disp.get(pr.sales_order_id, 0.0))
+        if line_balance <= 0 or line_balance - owned.get(pr.product_id, 0.0) <= 0:
+            pr.status = "Resolved"
+            pr.notes = (pr.notes or "") + " [Shortage covered by stock repositioning; auto-closed]"
+            closed_reqs += 1
+
+    if commit:
+        db.commit()
+    return {"requirements_created": created, "alerts_generated": alerts,
+            "alerts_resolved": resolved, "requirements_resolved": closed_reqs,
+            "scanned": len(rows)}
 
 
 # ---------------------------------------------------------------------------

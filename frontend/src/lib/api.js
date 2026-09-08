@@ -28,4 +28,25 @@ api.interceptors.response.use(
   },
 )
 
+export async function downloadFile(url, fallbackName = 'download') {
+  try {
+    const res = await api.get(url, { responseType: 'blob' })
+    const cd = res.headers?.['content-disposition'] || ''
+    const m = cd.match(/filename=(.+)/)
+    const filename = m ? m[1].replace(/["']/g, '').trim() : fallbackName
+    const blobUrl = window.URL.createObjectURL(res.data)
+    const a = document.createElement('a')
+    a.href = blobUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.URL.revokeObjectURL(blobUrl)
+  } catch (err) {
+    if (!err.response || err.response.status !== 401) {
+      alert(err.response?.data?.detail || 'Download failed')
+    }
+  }
+}
+
 export default api

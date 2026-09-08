@@ -67,6 +67,7 @@ export const FLOW_BADGES = {
   NO_BOM: { label: 'No BOM', cls: 'bg-amber-100 text-amber-700', dot: true },
   // delivery
   Completed: { label: 'Completed', cls: 'bg-green-100 text-green-700', dot: true },
+  'Completed (Closed)': { label: 'Completed (Closed)', cls: 'bg-green-100 text-green-700', dot: true },
   'Partially Dispatched': { label: 'Partial', cls: 'bg-amber-100 text-amber-700', dot: true },
   'Not Dispatched': { label: 'Not Dispatched', cls: 'bg-red-100 text-red-700', dot: true },
   Pending: { label: 'Pending', cls: 'bg-amber-100 text-amber-700', dot: true },

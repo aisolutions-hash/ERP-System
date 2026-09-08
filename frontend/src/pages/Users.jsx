@@ -40,8 +40,12 @@ export default function Users() {
   }
   const remove = async (row) => {
     if (!window.confirm(`Delete user "${row.username}"?`)) return
-    await api.delete(`/users/${row.id}`)
-    load()
+    try {
+      await api.delete(`/users/${row.id}`)
+      load()
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Delete failed')
+    }
   }
   const save = async (e) => {
     e.preventDefault()
@@ -132,9 +136,9 @@ export default function Users() {
         <Modal open title={modal === 'create' ? 'Add User' : 'Edit User'} onClose={() => setModal(null)}
           footer={<>
             <button type="button" onClick={() => setModal(null)} className="btn btn-secondary">Cancel</button>
-            <button type="submit" disabled={saving} className="btn btn-primary">{saving ? 'Saving…' : 'Save'}</button>
+            <button type="submit" form="user-form" disabled={saving} className="btn btn-primary">{saving ? 'Saving…' : 'Save'}</button>
           </>}>
-          <form onSubmit={save} className="space-y-4">
+          <form onSubmit={save} id="user-form" className="space-y-4">
             {field('Username *', 'username', { required: true })}
             {field('Full Name', 'full_name')}
             {field('Email *', 'email', { type: 'email', required: true })}

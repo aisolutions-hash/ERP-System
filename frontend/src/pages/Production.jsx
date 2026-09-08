@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Plus, Pencil, RefreshCw, CalendarClock, Factory, GitCompareArrows } from 'lucide-react'
+import { Plus, Pencil, RefreshCw, CalendarClock, Factory, GitCompareArrows, Trash2 } from 'lucide-react'
 import api from '../lib/api'
-import { PageHeader, Card, Modal, Loading, Empty, Badge, PageTabs, StatCard } from '../components/ui'
+import { PageHeader, Card, Modal, Loading, Empty, Badge, PageTabs, StatCard, SearchSelect } from '../components/ui'
 import Table from '../components/Table'
 import { fmtNum, CompletionBar } from '../lib/format'
 
@@ -22,6 +22,8 @@ export default function Production() {
   const [loading, setLoading] = useState(true)
   const [showPlanForm, setShowPlanForm] = useState(false)
   const [showActualForm, setShowActualForm] = useState(false)
+  const [showEditActual, setShowEditActual] = useState(false)
+  const [editForm, setEditForm] = useState({})
   const [form, setForm] = useState({})
 
   const loadProducts = () => api.get('/products', { params: { page_size: 500 } })
@@ -47,37 +49,58 @@ export default function Production() {
     const payload = {
       plan_type: 'PRODUCTION_PLAN', model: form.model || '',
       product_id: form.product_id || null, customer_id: form.customer_id || null,
+      customer_name: form.customer_name || '',
       quantity: form.quantity != null ? Number(form.quantity) : null,
       owner: form.owner || '', status: form.status || 'PENDING',
       plan_date: form.plan_date || new Date().toISOString().slice(0, 10),
       remarks: form.remarks || '',
     }
-    if (form.id) {
-      api.patch(`/plans/${form.id}`, payload).then(() => { setShowPlanForm(false); setForm({}); loadPlans() })
-    } else {
-      api.post('/plans', payload).then(() => { setShowPlanForm(false); setForm({}); loadPlans() })
-    }
+    const req = form.id ? api.patch(`/plans/${form.id}`, payload) : api.post('/plans', payload)
+    req.then(() => { setShowPlanForm(false); setForm({}); loadPlans() })
+      .catch((e) => alert('Save failed: ' + (e.response?.data?.detail || e.message)))
+  }
+
+  const removePlan = (r) => {
+    if (!window.confirm(`Delete production plan for "${r.model || (r.product?.model || '')}"? This cannot be undone.`)) return
+    api.delete(`/plans/${r.id}`)
+      .then(() => loadPlans())
+      .catch((e) => alert('Delete failed: ' + (e.response?.data?.detail || e.message)))
+  }
+
+  const removeProduction = (r) => {
+    if (!window.confirm(`Delete production order for "${r.model}" and reverse its stock effect?`)) return
+    api.delete(`/production/${r.plan_id || r.id}`)
+      .then(() => Promise.all([loadPlans(), loadActual(), loadPva()]))
+      .catch((e) => alert('Delete failed: ' + (e.response?.data?.detail || e.message)))
   }
 
   const planCols = [
     { key: 'plan_date', label: 'Plan Date', render: (r) => r.plan_date || '—' },
     { key: 'customer', label: 'Customer', render: (r) => r.customer?.name || '—' },
-    { key: 'owner', label: 'Owner / Salesperson', render: (r) => r.owner || '—' },
     { key: 'model', label: 'Product / Model', render: (r) => r.model || r.product?.model || '—' },
     { key: 'quantity', label: 'Planned Qty', render: (r) => <span className="font-semibold">{fmtNum(r.quantity)}</span> },
     { key: 'status', label: 'Status', render: (r) => <Badge className={sc[r.status]} dot>{r.status}</Badge> },
     { key: 'remarks', label: 'Remarks', render: (r) => <span className="text-slate-500 text-xs">{r.remarks || '—'}</span> },
     { key: 'edit', label: '', render: (r) => (
-      <button onClick={() => { setForm({ id: r.id, model: r.model, product_id: r.product_id, customer_id: r.customer_id, quantity: r.quantity, owner: r.owner, status: r.status, plan_date: r.plan_date, remarks: r.remarks }); setShowPlanForm(true) }} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="Edit"><Pencil size={15} /></button>
+      <div className="flex items-center gap-0.5">
+        <button onClick={() => { setForm({ id: r.id, model: r.model, product_id: r.product_id, customer_id: r.customer_id, customer_name: r.customer_name || r.customer?.name || '', quantity: r.quantity, owner: r.owner, status: r.status, plan_date: r.plan_date, remarks: r.remarks }); setShowPlanForm(true) }} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="Edit"><Pencil size={15} /></button>
+        <button onClick={(e) => { e.stopPropagation(); removePlan(r) }} className="text-slate-400 hover:text-red-600 p-1 hover:bg-red-50 rounded" title="Delete"><Trash2 size={14} /></button>
+      </div>
     )},
   ]
 
   const actualCols = [
     { key: 'production_date', label: 'Production Date', render: (r) => r.production_date || '—' },
+    { key: 'customer', label: 'Customer', render: (r) => r.customer || '—' },
     { key: 'model', label: 'Product', render: (r) => <span className="font-medium">{r.model || '—'}</span> },
     { key: 'item_code', label: 'Item Code', render: (r) => <span className="font-mono text-xs">{r.item_code || '—'}</span> },
     { key: 'quantity', label: 'Actual Produced', render: (r) => <span className="font-semibold">{fmtNum(r.quantity)}</span> },
     { key: 'ref', label: 'Reference / Production Order', render: (r) => <span className="font-mono text-xs">{r.ref || '—'}</span> },
+    { key: 'edit', label: '', render: (r) => (
+      <div className="flex items-center gap-0.5">
+        <button onClick={() => { setEditForm({ id: r.id, quantity: r.quantity, production_date: r.production_date }); setShowEditActual(true) }} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="Edit output"><Pencil size={14} /></button>
+      </div>
+    )},
   ]
 
   const pvaCols = [
@@ -89,6 +112,9 @@ export default function Production() {
     { key: 'completion_pct', label: 'Completion', render: (r) => <div className="min-w-36"><CompletionBar value={r.completion_pct} /></div> },
     { key: 'status', label: 'Status', render: (r) => <Badge className={sc[r.status]} dot>{r.status}</Badge> },
     { key: 'report_date', label: 'Report Date', render: (r) => r.report_date || '—' },
+    { key: 'delete', label: '', render: (r) => (
+      <button onClick={(e) => { e.stopPropagation(); removeProduction(r) }} className="text-slate-400 hover:text-red-600 p-1 hover:bg-red-50 rounded" title="Delete production order"><Trash2 size={14} /></button>
+    )},
   ]
 
   const unlinkedCols = [
@@ -180,18 +206,25 @@ export default function Production() {
           <button onClick={savePlan} className="btn btn-primary">Save Plan</button>
         </>}>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-          <div className="sm:col-span-2"><label className="block text-slate-500 text-xs mb-1">Model / Product</label>
-            <select value={form.product_id ?? ''} onChange={(e) => setForm({ ...form, product_id: e.target.value ? Number(e.target.value) : null, model: products.find((p) => p.id === Number(e.target.value))?.model || form.model })} className="input">
-              <option value="">Select product…</option>
-              {products.map((p) => <option key={p.id} value={p.id}>{p.model} {p.item_code ? `(${p.item_code})` : ''}</option>)}
-            </select></div>
-          <div><label className="block text-slate-500 text-xs mb-1">Model (override)</label>
-            <input value={form.model || ''} onChange={(e) => setForm({ ...form, model: e.target.value })} className="input" /></div>
-          <div><label className="block text-slate-500 text-xs mb-1">Customer</label>
-            <select value={form.customer_id ?? ''} onChange={(e) => setForm({ ...form, customer_id: e.target.value ? Number(e.target.value) : null })} className="input">
-              <option value="">None</option>
-              {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select></div>
+          <div className="sm:col-span-2"><label className="block text-slate-500 text-xs mb-1">Product / Model</label>
+            <SearchSelect
+              options={products.map((p) => ({ id: p.id, label: p.model }))}
+              value={form.product_id}
+              initialLabel={!form.product_id ? (form.model || '') : ''}
+              placeholder="Type to search or enter a product — existing products match automatically"
+              onChange={(id, manual) => {
+                if (id) { const mm = products.find((p) => p.id === id); setForm((f) => ({ ...f, product_id: id, model: mm?.model || '' })) }
+                else setForm((f) => ({ ...f, product_id: null, model: manual }))
+              }}
+            /></div>
+          <div className="sm:col-span-2"><label className="block text-slate-500 text-xs mb-1">Customer</label>
+            <SearchSelect
+              options={customers.map((c) => ({ id: c.id, label: c.name }))}
+              value={form.customer_id}
+              initialLabel={!form.customer_id ? (form.customer_name || '') : ''}
+              placeholder="Type to search or enter a customer name — new customers are auto-created"
+              onChange={(id, manual) => setForm((f) => ({ ...f, customer_id: id, customer_name: manual }))}
+            /></div>
           <div><label className="block text-slate-500 text-xs mb-1">Planned Qty</label>
             <input type="number" value={form.quantity ?? ''} onChange={(e) => setForm({ ...form, quantity: e.target.value })} className="input" /></div>
           <div><label className="block text-slate-500 text-xs mb-1">Owner / Salesperson</label>
@@ -226,6 +259,27 @@ export default function Production() {
             <input type="number" value={form.quantity ?? ''} onChange={(e) => setForm({ ...form, quantity: e.target.value })} className="input" /></div>
           <div><label className="block text-slate-500 text-xs mb-1">Production Date</label>
             <input type="date" value={form.production_date || ''} onChange={(e) => setForm({ ...form, production_date: e.target.value })} className="input" /></div>
+        </div>
+      </Modal>
+
+      {/* Actual edit modal */}
+      <Modal open={showEditActual} title="Edit Daily Production Output" onClose={() => setShowEditActual(false)}
+        footer={<>
+          <button onClick={() => setShowEditActual(false)} className="btn btn-secondary">Cancel</button>
+          <button onClick={async () => {
+            try {
+              const q = Number(editForm.quantity)
+              if (!q || q <= 0) { alert('Quantity must be greater than 0'); return }
+              await api.patch(`/production/movements/${editForm.id}`, null, { params: { quantity: q, production_date: editForm.production_date } })
+              setShowEditActual(false); setEditForm({}); loadActual(); loadPva()
+            } catch (e) { alert('Failed to edit output: ' + (e.response?.data?.detail || e.message)) }
+          }} className="btn btn-primary">Save Edit</button>
+        </>}>
+        <div className="grid grid-cols-1 gap-3 text-sm">
+          <div><label className="block text-slate-500 text-xs mb-1">Quantity</label>
+            <input type="number" value={editForm.quantity ?? ''} onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })} className="input" /></div>
+          <div><label className="block text-slate-500 text-xs mb-1">Production Date</label>
+            <input type="date" value={editForm.production_date || ''} onChange={(e) => setEditForm({ ...editForm, production_date: e.target.value })} className="input" /></div>
         </div>
       </Modal>
     </div>

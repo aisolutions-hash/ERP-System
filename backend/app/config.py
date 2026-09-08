@@ -55,8 +55,13 @@ class Settings(BaseSettings):
                 f"?host=/cloudsql/{self.CLOUD_SQL_CONNECTION_NAME}"
             )
 
-        # 3. Fallback — local dev PostgreSQL (will fail in production, that's intentional)
-        return "postgresql+psycopg2://kalika_app:kalika_116881@127.0.0.1:5432/kalika_erp"
+        # 3. Nothing configured — fail fast rather than silently try a local
+        #    dev database with baked-in credentials (never ship those).
+        raise RuntimeError(
+            "No database configuration. Set DATABASE_URL (local dev), or "
+            "CLOUD_SQL_CONNECTION_NAME with CLOUD_SQL_DB_NAME, CLOUD_SQL_DB_USER "
+            "and CLOUD_SQL_DB_PASS (Cloud Run)."
+        )
 
     @property
     def report_dir(self) -> Path:

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Plus, Pencil, Trash2, Download, Search, Truck, Package } from 'lucide-react'
-import api from '../lib/api'
+import api, { downloadFile } from '../lib/api'
 import { PageHeader, Card, Modal, Loading, Empty, StatCard } from '../components/ui'
 import Table from '../components/Table'
 
@@ -39,8 +39,12 @@ export default function Suppliers() {
   }
   const remove = async (row) => {
     if (!window.confirm(`Delete supplier "${row.name}"?`)) return
-    await api.delete(`/suppliers/${row.id}`)
-    load()
+    try {
+      await api.delete(`/suppliers/${row.id}`)
+      load()
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Delete failed')
+    }
   }
   const save = async (e) => {
     e.preventDefault()
@@ -93,7 +97,7 @@ export default function Suppliers() {
         subtitle={`${items.length} suppliers`}
         actions={
           <>
-            <a href="/api/reports/suppliers/csv" className="btn btn-secondary"><Download size={15} /> CSV</a>
+            <button onClick={() => downloadFile('/reports/suppliers/csv', 'suppliers.csv')} className="btn btn-secondary"><Download size={15} /> CSV</button>
             <button onClick={openCreate} className="btn btn-primary"><Plus size={15} /> Add Supplier</button>
           </>
         }
@@ -131,9 +135,9 @@ export default function Suppliers() {
         <Modal open title={modal === 'create' ? 'Add Supplier' : 'Edit Supplier'} onClose={() => setModal(null)} wide
           footer={<>
             <button type="button" onClick={() => setModal(null)} className="btn btn-secondary">Cancel</button>
-            <button type="submit" disabled={saving} className="btn btn-primary">{saving ? 'Saving…' : 'Save'}</button>
+            <button type="submit" form="supplier-form" disabled={saving} className="btn btn-primary">{saving ? 'Saving…' : 'Save'}</button>
           </>}>
-          <form onSubmit={save} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <form onSubmit={save} id="supplier-form" className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {field('Name *', 'name', { required: true })}
             {field('Code', 'code')}
             {field('Company', 'company')}

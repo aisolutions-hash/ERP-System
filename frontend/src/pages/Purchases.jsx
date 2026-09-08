@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Plus, Search, Download, Eye, Pencil, Trash2, RefreshCw, PackageOpen, FilePlus2, DollarSign, Layers, CheckCircle2 } from 'lucide-react'
-import api from '../lib/api'
-import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard } from '../components/ui'
+import api, { downloadFile } from '../lib/api'
+import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard, SearchSelect } from '../components/ui'
 import Table from '../components/Table'
 import { fmtNum } from '../lib/format'
 
@@ -47,15 +47,16 @@ export default function Purchases() {
   }
 
   const openNew = () => {
-    setForm({ po_number: nextPoNo(), order_date: new Date().toISOString().slice(0, 10), status: 'Ordered', notes: '', lines: [{ product_id: '', description: '', quantity: '', received_qty: 0, rate: '', amount: '' }] })
+    setForm({ po_number: nextPoNo(), order_date: new Date().toISOString().slice(0, 10), status: 'Ordered', notes: '', supplier_id: '', supplier_name: '', lines: [{ product_id: '', description: '', item_code: '', quantity: '', received_qty: 0, rate: '', amount: '' }] })
     setError(null); setShowForm(true)
   }
 
   const openEdit = (po) => {
     setForm({
       id: po.id, po_number: po.po_number, supplier_id: po.supplier_id ?? '',
+      supplier_name: po.supplier_name || '',
       order_date: po.order_date, status: po.status, notes: po.notes || '',
-      lines: (po.lines || []).map((l) => ({ id: l.id, product_id: l.product_id ?? '', description: l.description || '', quantity: l.quantity, received_qty: l.received_qty || 0, rate: l.rate ?? '', amount: l.amount ?? '' })),
+      lines: (po.lines || []).map((l) => ({ id: l.id, product_id: l.product_id ?? '', description: l.description || '', item_code: l.item_code || '', quantity: l.quantity, received_qty: l.received_qty || 0, rate: l.rate ?? '', amount: l.amount ?? '' })),
     })
     setError(null); setShowForm(true)
   }
@@ -71,19 +72,37 @@ export default function Purchases() {
     setForm({ ...form, lines })
   }
 
+  const setLineProduct = (i, id, manual) => {
+    const lines = [...form.lines]
+    const p = id ? products.find((pp) => pp.id === id) : null
+    lines[i] = {
+      ...lines[i],
+      product_id: id,
+      description: id ? lines[i].description : (manual || ''),
+      item_code: p ? (lines[i].item_code || p.item_code || '') : (lines[i].item_code || (id ? '' : '')),
+    }
+    const q = Number(lines[i].quantity || 0)
+    const r = Number(lines[i].rate || 0)
+    lines[i].amount = q * r
+    setForm({ ...form, lines })
+  }
+
   const save = async () => {
     const payload = {
       po_number: form.po_number, supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
+      supplier_name: (form.supplier_name || '').trim(),
       order_date: form.order_date, status: form.status || 'Ordered', notes: form.notes || '',
-      lines: form.lines.filter((l) => l.product_id || l.description).map((l) => ({
+      lines: form.lines.filter((l) => l.product_id || (l.description || '').trim()).map((l) => ({
         product_id: l.product_id ? Number(l.product_id) : null,
-        description: l.product_id ? '' : l.description,
+        description: l.description || '',
+        item_code: l.item_code || '',
         quantity: Number(l.quantity || 0), received_qty: Number(l.received_qty || 0),
         rate: l.rate !== '' && l.rate != null ? Number(l.rate) : null,
         amount: l.amount !== '' && l.amount != null ? Number(l.amount) : null,
       })),
     }
     if (!payload.po_number) { setError('PO number is required'); return }
+    if (!payload.supplier_id && !payload.supplier_name) { setError('Select or type a supplier'); return }
     if (payload.lines.length === 0) { setError('Add at least one line'); return }
     try {
       if (form.id) await api.patch(`/purchases/${form.id}`, payload)
@@ -97,6 +116,12 @@ export default function Purchases() {
     try { await api.delete(`/purchases/${po.id}`); load() } catch (e) { alert('Delete failed: ' + (e.response?.data?.detail || e.message)) }
   }
 
+  const grnDone = async (po) => {
+    const pending = (po.lines || []).reduce((s, l) => s + Math.max(0, (Number(l.quantity) || 0) - (Number(l.received_qty) || 0)), 0)
+    if (pending > 0 && !confirm(`Complete GRN for ${po.po_number}? Remaining qty ${fmtNum(pending)} will be received and added to stock.`)) return
+    try { await api.post(`/purchases/${po.id}/grn-done`); load() } catch (e) { alert('GRN failed: ' + (e.response?.data?.detail || e.message)) }
+  }
+
   const columns = [
     { key: 'po_number', label: 'PO No', render: (r) => <span className="font-mono text-xs font-medium">{r.po_number}</span> },
     { key: 'supplier', label: 'Supplier', render: (r) => <span className="font-medium">{r.supplier?.name || '—'}</span> },
@@ -106,14 +131,23 @@ export default function Purchases() {
     { key: 'lines', label: 'Lines', render: (r) => <Badge className="bg-slate-100 text-slate-600">{r.lines?.length || 0}</Badge> },
     {
       key: 'actions', label: '',
-      render: (r) => (
-        <div className="flex items-center gap-1.5">
-          <button onClick={() => setDetail(r)} className="btn btn-ghost p-1.5" title="View"><Eye size={15} /></button>
-          <button onClick={() => openEdit(r)} className="btn btn-ghost p-1.5" title="Edit"><Pencil size={15} /></button>
-          <button onClick={() => setShowReceive(r)} className="btn btn-ghost p-1.5 text-green-600" title="Receive"><PackageOpen size={15} /></button>
-          <button onClick={() => del(r)} className="btn btn-ghost p-1.5 text-red-400" title="Delete"><Trash2 size={15} /></button>
-        </div>
-      ),
+      render: (r) => {
+        const pending = (r.lines || []).reduce((s, l) => s + Math.max(0, (Number(l.quantity) || 0) - (Number(l.received_qty) || 0)), 0)
+        const done = pending <= 0
+        return (
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setDetail(r)} className="btn btn-ghost p-1.5" title="View"><Eye size={15} /></button>
+            {done ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-green-700 bg-green-100 px-2 py-1 rounded-md" title="GRN completed"><CheckCircle2 size={13} /> GRN Done</span>
+            ) : (
+              <button onClick={() => grnDone(r)} className="inline-flex items-center gap-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-2 py-1 rounded-md" title={`GRN Done — receive remaining ${fmtNum(pending)}`}><CheckCircle2 size={13} /> GRN Done</button>
+            )}
+            <button onClick={() => openEdit(r)} className="btn btn-ghost p-1.5" title="Edit"><Pencil size={15} /></button>
+            <button onClick={() => setShowReceive(r)} className="btn btn-ghost p-1.5 text-green-600" title="Receive"><PackageOpen size={15} /></button>
+            <button onClick={() => del(r)} className="btn btn-ghost p-1.5 text-red-400" title="Delete"><Trash2 size={15} /></button>
+          </div>
+        )
+      },
     },
   ]
 
@@ -127,7 +161,7 @@ export default function Purchases() {
       <PageHeader title="Purchases" subtitle="Supplier purchase orders • Requirement → PO → Ordered → Partially Received → Received → Stock"
         actions={
           <>
-            <a href="/api/reports/purchases/csv" className="btn btn-secondary"><Download size={15} /> CSV</a>
+            <button onClick={() => downloadFile('/reports/purchases/csv', 'purchases.csv')} className="btn btn-secondary"><Download size={15} /> CSV</button>
             <button onClick={load} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>
             <button onClick={openNew} className="btn btn-primary"><Plus size={15} /> New PO</button>
           </>
@@ -158,10 +192,16 @@ export default function Purchases() {
             <div><span className="text-slate-500">Order Date:</span> {detail.order_date}</div>
             <div><span className="text-slate-500">Total:</span> <span className="font-medium">{fmtNum(detail.total_amount)}</span></div>
             {detail.notes && <div className="col-span-2"><span className="text-slate-500">Notes:</span> {detail.notes}</div>}
+            {detail.warnings?.length > 0 && (
+              <div className="col-span-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs px-3 py-2">
+                <strong>Stock not updated:</strong> {detail.warnings.join(' ')}
+              </div>
+            )}
           </div>
           <Table
             columns={[
               { key: 'product', label: 'Product', render: (l) => <span className="font-medium">{l.product?.model || l.description}</span> },
+              { key: 'item_code', label: 'Item Code', render: (l) => <span className="font-mono text-xs">{l.item_code || '—'}</span> },
               { key: 'quantity', label: 'Qty', render: (l) => fmtNum(l.quantity) },
               { key: 'received_qty', label: 'Received', render: (l) => fmtNum(l.received_qty) },
               { key: 'pending', label: 'Pending', render: (l) => <span className={l.quantity - (l.received_qty || 0) > 0 ? 'text-amber-600' : 'text-green-600'}>{fmtNum((l.quantity || 0) - (l.received_qty || 0))}</span> },
@@ -190,10 +230,13 @@ export default function Purchases() {
             <div><label className="block text-slate-500 text-xs mb-1">Order Date</label>
               <input type="date" value={form.order_date || ''} onChange={(e) => setForm({ ...form, order_date: e.target.value })} className="input" /></div>
             <div><label className="block text-slate-500 text-xs mb-1">Supplier</label>
-              <select value={form.supplier_id ?? ''} onChange={(e) => setForm({ ...form, supplier_id: e.target.value ? Number(e.target.value) : '' })} className="input">
-                <option value="">Select supplier…</option>
-                {suppliers.map((s) => <option key={s.id} value={s.id}>{s.company || s.name}</option>)}
-              </select></div>
+              <SearchSelect
+                options={suppliers.map((s) => ({ id: s.id, label: s.company || s.name }))}
+                value={form.supplier_id || null}
+                initialLabel={!form.supplier_id ? (form.supplier_name || '') : ''}
+                placeholder="Type to search suppliers or enter a manual supplier name"
+                onChange={(id, manual) => setForm((f) => ({ ...f, supplier_id: id, supplier_name: manual }))}
+              /></div>
             <div><label className="block text-slate-500 text-xs mb-1">Status</label>
               <select value={form.status || 'Ordered'} onChange={(e) => setForm({ ...form, status: e.target.value })} className="input">
                 {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -203,21 +246,33 @@ export default function Purchases() {
           </div>
 
           <div className="mb-1 text-xs font-medium text-slate-500 uppercase">Purchase Lines</div>
+          <div className="hidden sm:grid grid-cols-12 gap-2 items-center text-[10px] uppercase tracking-wide text-slate-400 mb-1 px-1">
+            <div className="col-span-4">Product / Manual Item</div>
+            <div className="col-span-3">Item Code</div>
+            <div className="col-span-2">Qty</div>
+            <div className="col-span-2">Rate</div>
+            <div className="col-span-1" />
+          </div>
           <div className="space-y-2">
             {form.lines.map((ln, i) => (
               <div key={i} className="grid grid-cols-12 gap-2 items-center text-xs">
-                <select value={ln.product_id ?? ''} onChange={(e) => setLine(i, 'product_id', e.target.value ? Number(e.target.value) : '')} className="input col-span-5 py-1.5">
-                  <option value="">Select product…</option>
-                  {products.map((p) => <option key={p.id} value={p.id}>{p.model} {p.item_code ? `(${p.item_code})` : ''}</option>)}
-                </select>
+                <SearchSelect
+                  options={products.map((p) => ({ id: p.id, label: `${p.model}${p.item_code ? ` (${p.item_code})` : ''}` }))}
+                  value={ln.product_id || null}
+                  initialLabel={!ln.product_id ? (ln.description || '') : ''}
+                  placeholder="Product or manual item…"
+                  className="input col-span-4 py-1.5"
+                  onChange={(id, manual) => setLineProduct(i, id || '', manual)}
+                />
+                <input value={ln.item_code ?? ''} onChange={(e) => setLine(i, 'item_code', e.target.value)}
+                  placeholder="e.g. LAP-001" className="input col-span-3 py-1.5" />
                 <input value={ln.quantity ?? ''} type="number" onChange={(e) => setLine(i, 'quantity', e.target.value)} placeholder="Qty" className="input col-span-2 py-1.5" />
                 <input value={ln.rate ?? ''} type="number" onChange={(e) => setLine(i, 'rate', e.target.value)} placeholder="Rate" className="input col-span-2 py-1.5" />
-                <div className="col-span-2 text-slate-600">{ln.amount ? fmtNum(ln.amount) : ''}</div>
                 <button onClick={() => { if (form.lines.length > 1) setForm({ ...form, lines: form.lines.filter((_, j) => j !== i) }) }} className="col-span-1 text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
               </div>
             ))}
           </div>
-          <button onClick={() => setForm({ ...form, lines: [...form.lines, { product_id: '', description: '', quantity: '', received_qty: 0, rate: '', amount: '' }] })} className="btn btn-ghost mt-2 text-xs"><Plus size={12} className="inline mr-1" />Add line</button>
+          <button onClick={() => setForm({ ...form, lines: [...form.lines, { product_id: '', description: '', item_code: '', quantity: '', received_qty: 0, rate: '', amount: '' }] })} className="btn btn-ghost mt-2 text-xs"><Plus size={12} className="inline mr-1" />Add line</button>
         </Modal>
       )}
     </div>
@@ -228,20 +283,35 @@ function ReceiveModal({ po, onClose, onDone }) {
   const [qty, setQty] = useState({})
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+  const [warning, setWarning] = useState(po.warnings || [])
 
   const doReceive = async (lineId, received) => {
     setBusy(true); setErr(null)
     try {
-      await api.post(`/purchases/${po.id}/receive`, null, { params: { line_id: lineId, received_qty: Number(received) } })
+      const r = await api.post(`/purchases/${po.id}/receive`, null, { params: { line_id: lineId, received_qty: Number(received) } })
+      setWarning(r.data?.warnings || [])
       onDone()
     } catch (e) { setErr(e.response?.data?.detail || 'Receive failed') } finally { setBusy(false) }
   }
 
+  const untrackedCount = (po.lines || []).filter((l) => !l.product_id && !(l.item_code || '').trim()).length
+
   return (
     <Modal open title={`Receive Material — ${po.po_number}`} onClose={onClose} wide>
       {err && <div className="mb-3 text-sm state-box bg-red-50 text-red-700 border border-red-200">{err}</div>}
+      {warning.length > 0 && (
+        <div className="mb-3 text-sm state-box bg-amber-50 text-amber-800 border border-amber-200">
+          <strong>Stock not updated:</strong> {warning.join(' ')}
+        </div>
+      )}
+      {!warning.length && untrackedCount > 0 && (
+        <div className="mb-3 text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">
+          {untrackedCount} line(s) have no Item Code and no linked product — receiving updates the PO but will NOT change stock/inventory. Add an Item Code to track stock.
+        </div>
+      )}
       <Table columns={[
         { key: 'product', label: 'Product', render: (l) => <span className="font-medium">{l.product?.model || l.description}</span> },
+        { key: 'item_code', label: 'Item Code', render: (l) => <span className="font-mono text-xs">{l.item_code || '—'}</span> },
         { key: 'ordered', label: 'Ordered', render: (l) => fmtNum(l.quantity) },
         { key: 'received', label: 'Received', render: (l) => fmtNum(l.received_qty) },
         { key: 'pending', label: 'Pending', render: (l) => <span className={(l.quantity || 0) - (l.received_qty || 0) > 0 ? 'text-amber-600' : 'text-green-600'}>{fmtNum((l.quantity || 0) - (l.received_qty || 0))}</span> },
@@ -251,7 +321,9 @@ function ReceiveModal({ po, onClose, onDone }) {
         }},
         { key: 'action', label: '', render: (l) => {
           const pending = (l.quantity || 0) - (l.received_qty || 0)
-          return <button disabled={busy || pending <= 0} onClick={() => doReceive(l.id, qty[l.id] || pending)} className="btn btn-accent text-xs py-1.5">{busy ? 'Saving…' : 'Receive'}</button>
+          return l.product_id || (l.item_code || '').trim()
+            ? <button disabled={busy || pending <= 0} onClick={() => doReceive(l.id, qty[l.id] || pending)} className="btn btn-accent text-xs py-1.5">{busy ? 'Saving…' : 'Receive'}</button>
+            : <span className="text-[0.6875rem] text-amber-600">No Item Code — stock not tracked</span>
         }},
       ]} data={po.lines || []} />
       <div className="flex justify-end mt-4"><button onClick={onClose} className="btn btn-secondary">Close</button></div>

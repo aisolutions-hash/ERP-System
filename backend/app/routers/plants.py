@@ -1,14 +1,14 @@
 """Plant / location management (CRUD)."""
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..auth import CurrentUser, ManagerOrAdmin
 from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
-from ..models import Customer, Plant
+from ..models import Customer, Dispatch, Inventory, Plant, StockMovement
 from ..schemas import PlantCreate, PlantOut, PlantUpdate
 
 router = APIRouter(prefix="/plants", tags=["plants"])
@@ -58,6 +58,16 @@ def update_plant(plant_id: int, body: PlantUpdate, db: Annotated[Session, Depend
 def delete_plant(plant_id: int, db: Annotated[Session, Depends(get_db)],
                  user: ManagerOrAdmin):
     p = get_or_404(db, Plant, plant_id)
+    refs = []
+    if db.scalar(select(func.count()).select_from(Inventory).where(Inventory.plant_id == plant_id)):
+        refs.append("inventory")
+    if db.scalar(select(func.count()).select_from(StockMovement).where(StockMovement.plant_id == plant_id)):
+        refs.append("stock movements")
+    if db.scalar(select(func.count()).select_from(Dispatch).where(Dispatch.plant_id == plant_id)):
+        refs.append("dispatches")
+    if refs:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=f"Cannot delete plant: referenced by existing {' and '.join(refs)}.")
     db.delete(p)
     db.commit()
     write_audit(db, user, "DELETE", "plants", plant_id, f"Deleted plant {p.name}")

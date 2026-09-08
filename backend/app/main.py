@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select, text
 
 from .config import settings
 from .database import Base, engine, check_db_health
@@ -15,8 +16,61 @@ from .routers import (
     auth, users, meta, customers, suppliers, products, plants, raw_materials,
     purchases, inventory, production, orders, dispatch, plans, dashboard, reports,
     requirements, salespersons, local_orders, bom, alerts,
-    material_requirements, fulfilment,
+    material_requirements, fulfilment, stock_flow,
 )
+
+# Schema additions create_all cannot apply to pre-existing tables (idempotent ALTER).
+_COLUMN_MIGRATIONS = [
+    ("raw_material_balances", "min_stock", "DOUBLE PRECISION"),
+    ("raw_material_balances", "max_stock", "DOUBLE PRECISION"),
+    ("sales_order_lines", "less", "DOUBLE PRECISION"),
+    ("sales_orders", "customer_name", "VARCHAR(255)"),
+    ("sales_orders", "local_order_type", "VARCHAR(20) DEFAULT 'TRADING'"),
+    ("purchase_orders", "supplier_name", "VARCHAR(255)"),
+    ("purchase_order_lines", "item_code", "VARCHAR(120)"),
+    ("stock_transfers", "customer_name", "VARCHAR(255)"),
+    ("customer_dispatches", "customer_name", "VARCHAR(255)"),
+    ("bill_of_materials", "bom_id", "INTEGER"),
+]
+
+# Internal stock locations seeded as Plants (Main Store = plant_id NULL).
+_LOCATION_PLANTS = ["Dispatch", "Production"]
+
+
+def _ensure_columns() -> None:
+    with engine.begin() as conn:
+        for table, column, ddl in _COLUMN_MIGRATIONS:
+            conn.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}")
+            )
+        # Backfill derived fields ONLY where never computed (idempotent); existing
+        # historical values are left untouched.
+        conn.execute(text(
+            "UPDATE raw_material_balances "
+            "SET balance_qty = ROUND(CAST(COALESCE(schedule_qty, 0) - COALESCE(inward_qty, 0) AS NUMERIC), 4), "
+            "    completion_pct = CASE WHEN COALESCE(schedule_qty, 0) <> 0 "
+            "         THEN ROUND(CAST(COALESCE(inward_qty, 0) / COALESCE(schedule_qty, 0) AS NUMERIC), 4) ELSE 0 END "
+            "WHERE schedule_qty IS NOT NULL AND balance_qty IS NULL"
+        ))
+
+
+def _ensure_locations() -> None:
+    """Idempotent seed of internal stock locations as Plants
+    (Dispatch, Production). Main Store stays plant_id NULL. Never duplicates."""
+    from .database import SessionLocal
+    from .models import Plant
+    with SessionLocal() as session:
+        added = 0
+        for name in _LOCATION_PLANTS:
+            exists = session.scalar(select(Plant.id).where(Plant.name == name))
+            if not exists:
+                session.add(Plant(name=name, code=name.upper(),
+                                  description="Internal stock location"))
+                added += 1
+        session.commit()
+        if added:
+            log.info("Seeded internal locations: %s", _LOCATION_PLANTS)
+
 
 log = logging.getLogger("kalika")
 
@@ -53,6 +107,29 @@ def on_startup():
         log.info("Schema verified / tables created.")
     except Exception as exc:
         log.error("create_all failed (recoverable): %s", exc)
+    # Existing databases were created before min/max stock existed; add columns
+    # idempotently (fresh DBs already have them via the model).
+    try:
+        _ensure_columns()
+        log.info("Column migrations applied.")
+    except Exception as exc:
+        log.error("column migration failed (recoverable): %s", exc)
+    # Internal stock locations (Dispatch, Production) — idempotent seed.
+    try:
+        _ensure_locations()
+    except Exception as exc:
+        log.error("location seed failed (recoverable): %s", exc)
+    # Reconcile purchase/production shortage requirements + alerts on boot so
+    # the Alert Centre is current even for data imported or changed outside the
+    # API. Dedupe-safe and non-fatal (best-effort).
+    try:
+        from .database import SessionLocal
+        from .services.business import sync_purchase_shortages
+        with SessionLocal() as s:
+            r = sync_purchase_shortages(s)
+            log.info("Purchase shortage sync on startup: %s", r)
+    except Exception as exc:
+        log.error("startup shortage sync failed (recoverable): %s", exc)
 
 
 @app.get("/", include_in_schema=False)
@@ -96,6 +173,9 @@ app.include_router(bom.router)
 app.include_router(alerts.router)
 app.include_router(material_requirements.router)
 app.include_router(fulfilment.router)
+app.include_router(stock_flow.locations_router)
+app.include_router(stock_flow.transfer_router)
+app.include_router(stock_flow.dispatch_router)
 
 
 # Serve the built React app in production mode (frontend/dist mounted next to backend).

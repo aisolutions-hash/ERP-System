@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Download, RefreshCw, Users, Truck, Package, Factory, Boxes, ClipboardList, Scale } from 'lucide-react'
-import api from '../lib/api'
+import api, { downloadFile } from '../lib/api'
 import { PageHeader, Card, Loading, Empty, Badge, StatCard, PageTabs } from '../components/ui'
 import { fmtNum } from '../lib/format'
 
@@ -18,25 +18,34 @@ export default function Reports() {
   const [tab, setTab] = useState('customer')
   const [fulfilment, setFulfilment] = useState([])
   const [dispatchSum, setDispatchSum] = useState([])
-  const [production, setProduction] = useState([])
   const [raw, setRaw] = useState([])
   const [delivery, setDelivery] = useState({ items: [], summary: [], totals: { by_status: {} } })
+  const [prodMonth, setProdMonth] = useState(() => new Date().toISOString().slice(0, 7))
+  const [monthly, setMonthly] = useState(null)
+  const [monthlyLoading, setMonthlyLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [dStatus, setDStatus] = useState('')
+
+  const loadMonthly = () => {
+    setMonthlyLoading(true)
+    api.get('/reports/production/monthly', { params: { month: prodMonth } })
+      .then((r) => setMonthly(r.data))
+      .catch(() => setMonthly(null))
+      .finally(() => setMonthlyLoading(false))
+  }
+  useEffect(() => { if (tab === 'production') loadMonthly() }, [tab, prodMonth])
 
   const load = async () => {
     setLoading(true)
     try {
-      const [f, ds, prod, rm, del] = await Promise.all([
+      const [f, ds, rm, del] = await Promise.all([
         api.get('/fulfilment'),
         api.get('/dispatch/summary'),
-        api.get('/production'),
         api.get('/raw-materials', { params: { page_size: 500 } }),
         api.get('/reports/delivery'),
       ])
       setFulfilment(f.data.items || [])
       setDispatchSum(ds.data.items || [])
-      setProduction(prod.data.items || [])
       setRaw(rm.data.items || [])
       setDelivery(del.data || { items: [], summary: [], totals: { by_status: {} } })
     } catch {} finally { setLoading(false) }
@@ -100,7 +109,7 @@ export default function Reports() {
                   <option value="">All statuses</option>
                   {statusKeys.map((k) => <option key={k} value={k}>{k} ({byStatus[k]})</option>)}
                 </select>
-                <a href="/api/reports/delivery/csv" className="btn btn-secondary"><Download size={15} /> CSV</a>
+                <button onClick={() => downloadFile('/reports/delivery/csv', 'delivery_report.csv')} className="btn btn-secondary"><Download size={15} /> CSV</button>
               </div>
             }>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
@@ -128,13 +137,38 @@ export default function Reports() {
       )
     }
     if (tab === 'production') return (
-      <Card title="Production Summary" subtitle="Plan vs produced remaining">
-        {loading ? <Loading /> : <Table title="Production" data={production} cols={[
-          ['order_no', 'Order No'], ['product', 'Product', 'sub'], ['schedule_qty', 'Planned', 'num'],
-          ['produced_qty', 'Produced', 'num'], ['balance_qty', 'Pending', 'num'], ['completion_pct', 'Completion %', 'pct'],
-          ['status', 'Status', 'badge'],
-        ]} />}
-      </Card>
+      <div className="space-y-4">
+        <Card title="Monthly Production Report" subtitle="Actual daily production output — computed from production movements (no plan estimates)"
+          actions={
+            <div className="flex items-center gap-2 flex-wrap">
+              <input type="month" value={prodMonth} onChange={(e) => setProdMonth(e.target.value)} className="input" />
+              <button onClick={() => downloadFile(prodMonth ? `/reports/production/monthly/csv?month=${prodMonth}` : '/reports/production/monthly/csv', 'monthly_production.csv')} className="btn btn-secondary"><Download size={15} /> CSV</button>
+            </div>
+          }>
+          {monthlyLoading || !monthly ? <Loading /> : (
+            <>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+                <StatCard label="Total Produced" value={fmtNum(monthly.totals.quantity)} icon={Factory} iconClass="bg-violet-50 text-violet-600" />
+                <StatCard label="Production Days" value={monthly.totals.days} icon={Package} iconClass="bg-green-50 text-green-600" />
+                <StatCard label="Products" value={monthly.totals.products} icon={Boxes} iconClass="bg-blue-50 text-blue-600" />
+                <StatCard label="Output Records" value={monthly.totals.movements} icon={ClipboardList} iconClass="bg-amber-50 text-amber-600" />
+              </div>
+              {monthly.items.length === 0 ? <Empty text="No actual production recorded for this month" /> : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                  <Table title="Daily" data={monthly.items} cols={[
+                    ['production_date', 'Date'], ['model', 'Product', 'sub'], ['item_code', 'Item Code', 'mono'],
+                    ['customer', 'Customer'], ['quantity', 'Qty', 'num'], ['ref', 'Order', 'mono'],
+                  ]} />
+                  <Table title="Product" data={monthly.by_product} cols={[
+                    ['model', 'Product'], ['item_code', 'Item Code', 'mono'], ['quantity', 'Total Qty', 'num'],
+                    ['days', 'Days', 'num'], ['movements', 'Records', 'num'],
+                  ]} />
+                </div>
+              )}
+            </>
+          )}
+        </Card>
+      </div>
     )
     if (tab === 'raw') return (
       <Card title="Raw Material Summary" subtitle="Required vs available computed from BOM engine">
@@ -179,7 +213,7 @@ export default function Reports() {
       <PageHeader title="Reports" subtitle="Business-readable summaries"
         actions={
           <>
-            <a href="/api/reports/excel" className="btn btn-secondary"><Download size={15} /> Full Excel</a>
+            <button onClick={() => downloadFile('/reports/excel', 'kalika_report.xlsx')} className="btn btn-secondary"><Download size={15} /> Full Excel</button>
             <button onClick={load} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>
           </>
         } />

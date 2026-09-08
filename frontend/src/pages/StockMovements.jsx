@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Plus, RefreshCw, Download, ArrowDownCircle, ArrowUpCircle, Settings, ArrowUpDown, PackageOpen, Boxes } from 'lucide-react'
-import api from '../lib/api'
+import api, { downloadFile } from '../lib/api'
 import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard } from '../components/ui'
 import { fmtNum } from '../lib/format'
 
@@ -23,8 +23,10 @@ export default function StockMovements() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [products, setProducts] = useState([])
+  const [locations, setLocations] = useState([])
   const [movementType, setMovementType] = useState('')
   const [productId, setProductId] = useState('')
+  const [plantId, setPlantId] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [showForm, setShowForm] = useState(false)
@@ -37,6 +39,7 @@ export default function StockMovements() {
       const params = {}
       if (movementType) params.movement_type = movementType
       if (productId) params.product_id = productId
+      if (plantId) params.plant_id = plantId
       if (dateFrom) params.date_from = dateFrom
       if (dateTo) params.date_to = dateTo
       const res = await api.get('/inventory/movements', { params })
@@ -46,8 +49,9 @@ export default function StockMovements() {
 
   useEffect(() => {
     api.get('/products', { params: { page_size: 500 } }).then((r) => setProducts(r.data.items || [])).catch(() => {})
+    api.get('/inventory/locations').then((r) => setLocations(r.data.items || [])).catch(() => {})
   }, [])
-  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t) }, [movementType, productId, dateFrom, dateTo])
+  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t) }, [movementType, productId, plantId, dateFrom, dateTo])
 
   const addMovement = async () => {
     if (!form.product_id || !(form.quantity > 0) || !form.movement_type) { setErr('Product, movement type and positive quantity required'); return }
@@ -56,6 +60,7 @@ export default function StockMovements() {
         product_id: Number(form.product_id),
         movement_type: form.movement_type,
         quantity: Number(form.quantity),
+        plant_id: form.plant_id !== undefined && form.plant_id !== '' ? Number(form.plant_id) : null,
         transaction_date: form.transaction_date || new Date().toISOString().slice(0, 10),
         remarks: form.remarks || '',
       })
@@ -74,7 +79,7 @@ export default function StockMovements() {
       <PageHeader title="Stock Movements" subtitle="Every stock change recorded (receipts, issues, production, adjustments)"
         actions={
           <>
-            <a href="/api/reports/inventory/csv" className="btn btn-secondary"><Download size={15} /> CSV</a>
+            <button onClick={() => downloadFile('/reports/movements/csv', 'stock_movements.csv')} className="btn btn-secondary"><Download size={15} /> CSV</button>
             <button onClick={load} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>
             <button onClick={() => { setForm({}); setErr(null); setShowForm(true) }} className="btn btn-primary"><Plus size={15} /> Record Movement</button>
           </>
@@ -97,6 +102,10 @@ export default function StockMovements() {
             <option value="">All products</option>
             {products.map((p) => <option key={p.id} value={p.id}>{p.model}</option>)}
           </select>
+          <select value={plantId} onChange={(e) => setPlantId(e.target.value)} className="input max-w-40">
+            <option value="">All locations</option>
+            {locations.map((l) => <option key={l.id ?? 'main'} value={l.id ?? ''}>{l.name}</option>)}
+          </select>
           <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="input" />
           <span className="text-slate-400 text-xs">to</span>
           <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="input" />
@@ -108,7 +117,7 @@ export default function StockMovements() {
               <thead><tr>
                 <th>Date</th><th>Product</th>
                 <th>Type</th><th className="text-right">Qty</th>
-                <th>UOM</th><th>Reference</th>
+                <th>UOM</th><th>Location</th><th>Reference</th>
                 <th>Remarks</th><th>Source</th>
               </tr></thead>
               <tbody>
@@ -121,6 +130,7 @@ export default function StockMovements() {
                       {isInward(m.movement_type) ? '+' : '−'}{fmtNum(m.quantity)}
                     </td>
                     <td>{m.product?.uom || '—'}</td>
+                    <td><Badge className="bg-slate-100 text-slate-600">{m.plant || 'Main Store'}</Badge></td>
                     <td className="text-xs text-slate-500">{m.ref_type ? `${m.ref_type}${m.ref_id ? `#${m.ref_id}` : ''}` : 'Manual'}</td>
                     <td className="text-xs text-slate-500">{m.remarks || '—'}</td>
                     <td>{m.ref_type ? <Settings size={14} className="text-slate-300" /> : <ArrowDownCircle size={14} className="text-amber-400" />}</td>
@@ -148,6 +158,11 @@ export default function StockMovements() {
             <select value={form.movement_type || ''} onChange={(e) => setForm({ ...form, movement_type: e.target.value })} className="input">
               <option value="">Select type…</option>
               {movementTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select></div>
+          <div><label className="block text-slate-500 text-xs mb-1">Location</label>
+            <select value={form.plant_id ?? ''} onChange={(e) => setForm({ ...form, plant_id: e.target.value })} className="input">
+              <option value="">Main Store</option>
+              {locations.filter((l) => l.id != null).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
             </select></div>
           <div><label className="block text-slate-500 text-xs mb-1">Quantity *</label>
             <input type="number" step="any" value={form.quantity ?? ''} onChange={(e) => setForm({ ...form, quantity: e.target.value })} className="input" /></div>

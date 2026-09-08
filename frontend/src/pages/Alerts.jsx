@@ -36,8 +36,16 @@ export default function Alerts() {
 
   useEffect(() => { load() }, [typeFilter, priorityFilter, statusFilter])
 
-  const markRead = async (id) => { await api.patch(`/alerts/${id}`, { is_read: true }); load() }
-  const markAllRead = async () => { await api.post('/alerts/mark-all-read'); load() }
+  const markRead = async (id) => {
+    try { await api.patch(`/alerts/${id}`, { is_read: true }) }
+    catch (err) { alert('Failed to mark read: ' + (err.response?.data?.detail || err.message)) }
+    load()
+  }
+  const markAllRead = async () => {
+    try { await api.post('/alerts/mark-all-read') }
+    catch (err) { alert('Failed to mark all read: ' + (err.response?.data?.detail || err.message)) }
+    load()
+  }
 
   const types = [...new Set(items.map((a) => a.type))].sort()
   const open = items.filter((a) => a.status === 'OPEN').length

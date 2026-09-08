@@ -1,7 +1,7 @@
 """Customer management (CRUD)."""
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -78,7 +78,22 @@ def update_customer(customer_id: int, body: CustomerUpdate, db: Annotated[Sessio
 def delete_customer(customer_id: int, db: Annotated[Session, Depends(get_db)],
                     user: ManagerOrAdmin):
     cust = get_or_404(db, Customer, customer_id)
-    db.delete(cust)
-    db.commit()
+    refs = []
+    if db.scalar(select(func.count()).select_from(SalesOrder).where(SalesOrder.customer_id == customer_id)):
+        refs.append("orders")
+    if db.scalar(select(func.count()).select_from(Dispatch).where(Dispatch.customer_id == customer_id)):
+        refs.append("dispatches")
+    if refs:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot delete customer: referenced by existing {' and '.join(refs)}. Deactivate instead."
+        )
+    try:
+        db.delete(cust)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="Cannot delete customer: referenced by other records.")
     write_audit(db, user, "DELETE", "customers", customer_id, f"Deleted customer {cust.name}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

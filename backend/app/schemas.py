@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from .models import (
     DispatchStatus, MovementType, OrderStatus, OrderType, PlanType, ProductCategory,
@@ -193,6 +193,8 @@ class RawMaterialBalanceOut(ORMModel):
     completion_pct: Optional[float]
     balance_qty: Optional[float]
     opening_stock: Optional[float]
+    min_stock: Optional[float]
+    max_stock: Optional[float]
     notes: str
     product: Optional[ProductOut] = None
 
@@ -201,6 +203,7 @@ class RawMaterialBalanceOut(ORMModel):
 class PurchaseOrderLineIn(BaseModel):
     product_id: Optional[int] = None
     description: str = ""
+    item_code: str = ""
     quantity: float = 0
     received_qty: float = 0
     rate: Optional[float] = None
@@ -210,6 +213,7 @@ class PurchaseOrderLineIn(BaseModel):
 class PurchaseOrderCreate(BaseModel):
     po_number: str = Field(min_length=1, max_length=120)
     supplier_id: Optional[int] = None
+    supplier_name: str = ""
     order_date: date = Field(default_factory=date.today)
     status: PurchaseStatus = PurchaseStatus.ordered
     notes: str = ""
@@ -217,7 +221,9 @@ class PurchaseOrderCreate(BaseModel):
 
 
 class PurchaseOrderUpdate(BaseModel):
+    po_number: Optional[str] = None
     supplier_id: Optional[int] = None
+    supplier_name: Optional[str] = None
     order_date: Optional[date] = None
     status: Optional[PurchaseStatus] = None
     notes: Optional[str] = None
@@ -228,6 +234,7 @@ class PurchaseOrderLineOut(ORMModel):
     id: int
     product_id: Optional[int]
     description: str
+    item_code: str = ""
     quantity: float
     received_qty: float
     rate: Optional[float]
@@ -286,6 +293,112 @@ class InventoryOut(ORMModel):
     plant: Optional[PlantOut] = None
 
 
+# ------------------------- Stock Transfers -------------------------
+class StockTransferLineIn(BaseModel):
+    product_id: Optional[int] = None
+    item_code: str = ""
+    description: str = ""
+    quantity: float = 0
+
+
+class StockTransferCreate(BaseModel):
+    transfer_no: Optional[str] = None
+    from_plant_id: Optional[int] = None  # None = Main Store
+    to_plant_id: int
+    customer_id: Optional[int] = None
+    customer_name: str = ""
+    transfer_date: date = Field(default_factory=date.today)
+    notes: str = ""
+    lines: list[StockTransferLineIn] = []
+
+
+class StockTransferUpdate(BaseModel):
+    transfer_no: Optional[str] = None
+    from_plant_id: Optional[int] = None
+    to_plant_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    transfer_date: Optional[date] = None
+    notes: Optional[str] = None
+    lines: Optional[list[StockTransferLineIn]] = None
+
+
+class StockTransferLineOut(ORMModel):
+    id: int
+    product_id: Optional[int]
+    item_code: str
+    description: str
+    quantity: float
+    product: Optional[ProductOut] = None
+
+
+class StockTransferOut(ORMModel):
+    id: int
+    transfer_no: str
+    from_plant_id: Optional[int]
+    to_plant_id: int
+    customer_id: Optional[int]
+    customer_name: str
+    transfer_date: date
+    notes: str
+    created_at: datetime
+    from_plant: Optional[PlantOut] = None
+    to_plant: Optional[PlantOut] = None
+    customer: Optional[CustomerOut] = None
+    lines: list[StockTransferLineOut] = []
+
+
+# ------------------------- Customer Dispatch -------------------------
+class CustomerDispatchLineIn(BaseModel):
+    product_id: Optional[int] = None
+    item_code: str = ""
+    description: str = ""
+    quantity: float = 0
+
+
+class CustomerDispatchCreate(BaseModel):
+    dispatch_no: Optional[str] = None
+    customer_id: Optional[int] = None
+    customer_name: str = ""
+    plant_id: Optional[int] = None  # Dispatch location (defaults to seeded plant)
+    dispatch_date: date = Field(default_factory=date.today)
+    remarks: str = ""
+    lines: list[CustomerDispatchLineIn] = []
+
+
+class CustomerDispatchUpdate(BaseModel):
+    dispatch_no: Optional[str] = None
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    plant_id: Optional[int] = None
+    dispatch_date: Optional[date] = None
+    remarks: Optional[str] = None
+    lines: Optional[list[CustomerDispatchLineIn]] = None
+
+
+class CustomerDispatchLineOut(ORMModel):
+    id: int
+    product_id: Optional[int]
+    item_code: str
+    description: str
+    quantity: float
+    product: Optional[ProductOut] = None
+
+
+class CustomerDispatchOut(ORMModel):
+    id: int
+    dispatch_no: str
+    customer_id: Optional[int]
+    customer_name: str
+    plant_id: Optional[int]
+    dispatch_date: date
+    remarks: str
+    created_at: datetime
+    customer: Optional[CustomerOut] = None
+    plant: Optional[PlantOut] = None
+    lines: list[CustomerDispatchLineOut] = []
+
+
 # ------------------------- Production -------------------------
 class ProductionOrderCreate(BaseModel):
     product_id: int
@@ -295,6 +408,8 @@ class ProductionOrderCreate(BaseModel):
     ask_till_date: Optional[float] = None
     produced_qty: float = 0
     opening_stock: float = 0
+    customer_id: Optional[int] = None
+    customer_name: str = ""
     status: ProductionStatus = ProductionStatus.planned
     start_date: Optional[date] = None
     completion_date: Optional[date] = None
@@ -309,6 +424,8 @@ class ProductionOrderUpdate(BaseModel):
     ask_till_date: Optional[float] = None
     produced_qty: Optional[float] = None
     opening_stock: Optional[float] = None
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
     status: Optional[ProductionStatus] = None
     start_date: Optional[date] = None
     completion_date: Optional[date] = None
@@ -344,11 +461,21 @@ class ProductionOrderOut(ORMModel):
 
 
 # ------------------------- Orders -------------------------
+def _order_status(obj):
+    """Accept enum member names ('new') and values ('New')."""
+    if isinstance(obj, str):
+        for member in OrderStatus:
+            if member.name.lower() == obj.lower() or member.value.lower() == obj.lower():
+                return member.value
+    return obj
+
+
 class SalesOrderLineIn(BaseModel):
     product_id: Optional[int] = None
     description: str = ""
     quantity: float = 0
     unit_price: Optional[float] = None
+    less: Optional[float] = None
     amount: Optional[float] = None
     customer_po_no: str = ""
 
@@ -358,6 +485,7 @@ class SalesOrderLineUpdate(BaseModel):
     description: Optional[str] = None
     quantity: Optional[float] = None
     unit_price: Optional[float] = None
+    less: Optional[float] = None
     amount: Optional[float] = None
     customer_po_no: Optional[str] = None
 
@@ -365,7 +493,9 @@ class SalesOrderLineUpdate(BaseModel):
 class SalesOrderCreate(BaseModel):
     order_no: Optional[str] = None
     customer_id: Optional[int] = None
+    customer_name: str = ""
     order_type: OrderType = OrderType.oem
+    local_order_type: Optional[str] = None
     customer_po_no: str = ""
     salesperson_id: Optional[int] = None
     order_date: date = Field(default_factory=date.today)
@@ -374,14 +504,52 @@ class SalesOrderCreate(BaseModel):
     remarks: str = ""
     lines: list[SalesOrderLineIn] = []
 
+    _status = field_validator("status", mode="before")(_order_status)
+
 
 class SalesOrderUpdate(BaseModel):
     customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
     order_date: Optional[date] = None
     required_delivery_date: Optional[date] = None
+    local_order_type: Optional[str] = None
     status: Optional[OrderStatus] = None
     remarks: Optional[str] = None
     lines: Optional[list[SalesOrderLineIn]] = None
+
+    _status = field_validator("status", mode="before")(_order_status)
+
+
+class LocalOrderLineIn(SalesOrderLineIn):
+    """Local order line: carries the DB line id so edits preserve history."""
+    id: Optional[int] = None
+
+
+class LocalOrderCreate(BaseModel):
+    order_no: Optional[str] = None
+    customer_id: Optional[int] = None
+    customer_name: str = ""
+    local_order_type: Optional[str] = None
+    order_date: date = Field(default_factory=date.today)
+    required_delivery_date: Optional[date] = None
+    status: OrderStatus = OrderStatus.new
+    remarks: str = ""
+    lines: list[LocalOrderLineIn] = []
+
+    _status = field_validator("status", mode="before")(_order_status)
+
+
+class LocalOrderUpdate(BaseModel):
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    order_date: Optional[date] = None
+    required_delivery_date: Optional[date] = None
+    local_order_type: Optional[str] = None
+    status: Optional[OrderStatus] = None
+    remarks: Optional[str] = None
+    lines: Optional[list[LocalOrderLineIn]] = None
+
+    _status = field_validator("status", mode="before")(_order_status)
 
 
 class SalesOrderLineOut(ORMModel):
@@ -390,6 +558,7 @@ class SalesOrderLineOut(ORMModel):
     description: str
     quantity: float
     unit_price: Optional[float]
+    less: Optional[float]
     amount: Optional[float]
     product: Optional[ProductOut] = None
 
@@ -411,16 +580,19 @@ class SalesOrderOut(ORMModel):
 # ------------------------- Dispatch -------------------------
 class DispatchLineIn(BaseModel):
     product_id: Optional[int] = None
+    item_code: str = ""
     description: str = ""
     quantity: float = 0
     dispatch_date: date = Field(default_factory=date.today)
     rate: Optional[float] = None
     weight: Optional[float] = None
+    sales_order_line_id: Optional[int] = None
 
 
 class DispatchCreate(BaseModel):
     dispatch_no: Optional[str] = None
     customer_id: Optional[int] = None
+    customer_name: str = ""
     plant_id: Optional[int] = None
     sales_order_id: Optional[int] = None
     sales_person: str = ""
@@ -439,6 +611,7 @@ class DispatchCreate(BaseModel):
 
 class DispatchUpdate(BaseModel):
     customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
     plant_id: Optional[int] = None
     sales_order_id: Optional[int] = None
     sales_person: Optional[str] = None
@@ -497,6 +670,7 @@ class PlanCreate(BaseModel):
     model: str
     product_id: Optional[int] = None
     customer_id: Optional[int] = None
+    customer_name: str = ""
     quantity: Optional[float] = None
     rate: Optional[float] = None
     weight: Optional[float] = None
@@ -510,6 +684,7 @@ class PlanUpdate(BaseModel):
     model: Optional[str] = None
     product_id: Optional[int] = None
     customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
     quantity: Optional[float] = None
     rate: Optional[float] = None
     weight: Optional[float] = None
@@ -552,6 +727,8 @@ class BOMCreate(BOMBase):
 
 
 class BOMUpdate(BaseModel):
+    product_id: Optional[int] = None
+    raw_material_product_id: Optional[int] = None
     quantity_per_unit: Optional[float] = Field(default=None, gt=0)
     uom: Optional[str] = None
     effective_date: Optional[date] = None
@@ -566,6 +743,28 @@ class BOMOut(BOMBase, ORMModel):
     created_at: datetime
     product: Optional[ProductOut] = None
     raw_material: Optional[ProductOut] = None
+
+
+class BOMLineIn(BaseModel):
+    """One raw-material line for a BOM. Either an existing product id or a
+    manually typed name is accepted (name auto-creates the product if unknown)."""
+    id: Optional[int] = None
+    raw_material_product_id: Optional[int] = None
+    raw_material_name: str = ""
+    quantity_per_unit: float = Field(default=0)
+    uom: str = "KG"
+
+
+class BOMGroupIn(BaseModel):
+    """Header + multiple raw material lines for one BOM."""
+    bom_code: str = Field(min_length=1, max_length=60)
+    product_id: Optional[int] = None
+    product_name: str = ""
+    effective_date: date = Field(default_factory=date.today)
+    version: int = 1
+    notes: str = ""
+    is_active: bool = True
+    lines: list[BOMLineIn] = []
 
 
 # ------------------------- Alerts -------------------------

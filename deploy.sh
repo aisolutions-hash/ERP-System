@@ -87,6 +87,20 @@ else
 fi
 
 echo ""
+echo "=== 4b/6  Locating JWT secret ==="
+JWT_SECRET="${JWT_SECRET:-}"
+JWT_SECRET_NAME="${JWT_SECRET_SECRET:-kalika-jwt-secret}"
+if [[ -z "$JWT_SECRET" ]] && gcloud secrets describe "$JWT_SECRET_NAME" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  JWT_SECRET="$(gcloud secrets versions access latest --secret="$JWT_SECRET_NAME" --project="${PROJECT_ID}")"
+fi
+if [[ -z "$JWT_SECRET" ]]; then
+  echo "✗ JWT_SECRET not set. Create a secret first, then re-run:"
+  echo "    echo -n '$(openssl rand -hex 32)' | gcloud secrets create ${JWT_SECRET_NAME} --replication-policy=automatic --data-file=- --project=${PROJECT_ID}"
+  echo "  You can also export JWT_SECRET=<value> and re-run."
+  exit 1
+fi
+
+echo ""
 echo "=== 5/6  Deploying Cloud Run service + connecting to Cloud SQL ==="
 gcloud run deploy "$SERVICE" \
   --image="${IMAGE}" \
@@ -105,6 +119,7 @@ gcloud run deploy "$SERVICE" \
 CLOUD_SQL_DB_NAME=${CLOUD_SQL_DB_NAME},\
 CLOUD_SQL_DB_USER=${CLOUD_SQL_DB_USER},\
 CLOUD_SQL_CONNECTION_NAME=${CLOUD_SQL_CONNECTION},\
+JWT_SECRET=${JWT_SECRET},\
 DB_SECRET=${DB_SECRET},\
 REPORT_DIR=/app/reports,\
 GCS_BUCKET=kalisoftai-datahub,\

@@ -22,8 +22,8 @@ export default function PendingPO() {
   useEffect(() => { load(mode) }, [mode])
 
   const summary = {
-    pending: rows.filter((r) => r.status === 'Pending').length,
-    completed: rows.filter((r) => r.status === 'Completed').length,
+    pending: rows.filter((r) => r.status === 'Pending' || r.status === 'Partially Dispatched').length,
+    completed: rows.filter((r) => r.status === 'Completed' || r.status === 'Completed (Closed)').length,
     over: rows.filter((r) => r.status === 'Over-fulfilled').length,
   }
 
@@ -43,17 +43,18 @@ export default function PendingPO() {
 
   return (
     <div className="animate-fade-in-up">
-      <PageHeader title="Pending Purchase Orders" subtitle="Ordered vs dispatched, with over-fulfilment detection" />
+      <PageHeader title="Pending Purchase Orders" subtitle="Permanent order ledger - pending balance carries forward across months" />
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
-        <StatCard label="Pending" value={summary.pending} icon={Clock} iconClass="bg-amber-50 text-amber-600" valueClass="text-amber-600" />
+        <StatCard label="Pending / Partial" value={summary.pending} icon={Clock} iconClass="bg-amber-50 text-amber-600" valueClass="text-amber-600" />
         <StatCard label="Completed" value={summary.completed} icon={CheckCircle2} iconClass="bg-green-50 text-green-600" valueClass="text-green-600" />
         <StatCard label="Over-fulfilled" value={summary.over} icon={AlertTriangle} iconClass="bg-red-50 text-red-600" valueClass="text-red-600" />
       </div>
 
       <PageTabs tabs={[
         { key: 'all', label: 'All', icon: <ShoppingBag size={15} />, count: rows.length },
-        { key: 'current', label: 'Current Period', icon: <Clock size={15} /> },
+        { key: 'current', label: 'Current Month', icon: <Clock size={15} /> },
+        { key: 'previous', label: 'Previous (Carried)', icon: <Clock size={15} /> },
       ]} active={mode} onChange={setMode} />
 
       <Card>

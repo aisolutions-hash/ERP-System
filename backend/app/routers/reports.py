@@ -12,8 +12,9 @@ from ..auth import CurrentUser
 from ..config import settings
 from ..database import get_db
 from ..models import (
-    Customer, Dispatch, DispatchLine, Inventory, Plant, Product, ProductionOrder,
-    PurchaseOrder, RawMaterialBalance, SalesOrder, SalesOrderLine, StockMovement, Supplier,
+    Customer, Dispatch, DispatchLine, Inventory, Plant, Product, ProductionMovement,
+    ProductionOrder, PurchaseOrder, RawMaterialBalance, SalesOrder, SalesOrderLine,
+    StockMovement, Supplier,
 )
 from datetime import date
 
@@ -77,6 +78,106 @@ def production_csv(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
     data = [[o.order_no, o.product.model if o.product else "", o.section or "", o.schedule_qty, o.produced_qty,
              o.completion_pct, o.balance_qty, o.status.value, o.report_date] for o in rows]
     return _csv_response(headers, data, "production.csv")
+
+
+# ---------------------------------------------------------------------------
+# Monthly Production Report (Phase: Production Department)
+# Totals are derived from ACTUAL production movements (date-wise output records),
+# never from plans — a plan is a target, actual output is the record.
+# ---------------------------------------------------------------------------
+def _monthly_production_rows(db: Session, month: str):
+    """Daily actual production movements for the month 'YYYY-MM' (or '' = all)."""
+    stmt = select(ProductionMovement).where(ProductionMovement.production_date.is_not(None))
+    if month:
+        y, m = int(month[:4]), int(month[5:7])
+        d0 = date(y, m, 1)
+        d1 = date(y + (1 if m == 12 else 0), (1 if m == 12 else m + 1), 1)
+        stmt = stmt.where(ProductionMovement.production_date >= d0,
+                          ProductionMovement.production_date < d1)
+    rows = db.scalars(stmt.order_by(ProductionMovement.production_date, ProductionMovement.id)).all()
+    items = []
+    for m in rows:
+        po = m.production_order
+        p = po.product if po else None
+        cust = po.customer if po else None
+        items.append({
+            "id": m.id,
+            "production_order_id": m.production_order_id,
+            "production_date": m.production_date.isoformat(),
+            "product_id": p.id if p else (po.product_id if po else None),
+            "model": p.model if p else None,
+            "item_code": p.item_code if p else None,
+            "customer_id": cust.id if cust else (po.customer_id if po else None),
+            "customer": cust.name if cust else None,
+            "quantity": float(m.quantity or 0),
+            "ref": po.order_no if po else "",
+        })
+    return items
+
+
+@router.get("/production/monthly")
+def monthly_production_report(
+    db: Annotated[Session, Depends(get_db)],
+    _: CurrentUser,
+    month: str = "",
+):
+    """Monthly production report built from actual daily production movements.
+
+    `month` is 'YYYY-MM' (empty = all time). Returns the daily ledger plus
+    per-product and per-date rollups and month totals — all DB-driven.
+    """
+    items = _monthly_production_rows(db, month)
+
+    by_product = {}
+    by_date = {}
+    total_qty = 0.0
+    for i in items:
+        total_qty += i["quantity"]
+        d = i["production_date"]
+        e = by_date.setdefault(d, {"production_date": d, "quantity": 0.0, "movements": 0})
+        e["quantity"] += i["quantity"]
+        e["movements"] += 1
+        pk = i["product_id"]
+        e2 = by_product.setdefault(pk, {"product_id": pk, "model": i["model"],
+                                        "item_code": i["item_code"], "quantity": 0.0,
+                                        "days": set(), "movements": 0})
+        e2["quantity"] += i["quantity"]
+        e2["days"].add(d)
+        e2["movements"] += 1
+
+    def finalize(e):
+        e["days"] = len(e["days"])
+        return e
+
+    by_product = [finalize(e) for e in by_product.values()]
+    by_product.sort(key=lambda x: -(x["quantity"] or 0))
+    by_date = sorted(by_date.values(), key=lambda x: x["production_date"], reverse=True)
+    return {
+        "month": month,
+        "items": items,
+        "by_product": by_product,
+        "by_date": by_date,
+        "totals": {
+            "quantity": round(total_qty, 4),
+            "days": len(by_date),
+            "products": len(by_product),
+            "movements": len(items),
+        },
+    }
+
+
+@router.get("/production/monthly/csv")
+def monthly_production_csv(
+    db: Annotated[Session, Depends(get_db)],
+    _: CurrentUser,
+    month: str = "",
+):
+    items = _monthly_production_rows(db, month)
+    headers = ["Date", "Product", "Item Code", "Customer", "Quantity", "Production Order"]
+    data = [[i["production_date"], i["model"] or "", i["item_code"] or "", i["customer"] or "",
+             i["quantity"], i["ref"]] for i in items]
+    fname = f"monthly_production_{month}_{date.today().isoformat()}.csv"
+    return _csv_response(headers, data, fname)
 
 
 @router.get("/dispatch/csv")

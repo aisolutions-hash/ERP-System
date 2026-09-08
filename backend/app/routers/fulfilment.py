@@ -13,7 +13,8 @@ from ..models import (
     SalesOrder, SalesOrderLine,
 )
 from ..schemas import FulfilmentIndicator
-from ..services.business import fulfilment_for_line, inventory_map, upsert_purchase_requirement, ensure_alert, recompute_order_statuses
+from ..services.business import (ensure_alert, fulfilment_for_line, inventory_map,
+                                 recompute_order_statuses, sync_purchase_shortages)
 
 router = APIRouter(prefix="/fulfilment", tags=["fulfilment"])
 
@@ -98,54 +99,13 @@ def fulfilment_view(
 @router.post("/sync-requirements")
 def sync_requirements(db: Annotated[Session, Depends(get_db)], user: AllStaff):
     """Reconcile purchase requirements + generate alerts for the current
-    fulfilment state. Dedupe-safe (upserts existing open requirements)."""
-    inv = inventory_map(db)
-    _d = select(
-        Dispatch.sales_order_id,
-        func.coalesce(func.sum(DispatchLine.quantity), 0).label("tot")
-    ).join(DispatchLine, DispatchLine.dispatch_id == Dispatch.id)
-    _d = _d.group_by(Dispatch.sales_order_id)
-    disp_by_order = {oid: float(q or 0) for oid, q in db.execute(_d).all()}
-    rows = db.execute(
-        select(SalesOrder, SalesOrderLine)
-        .join(SalesOrderLine, SalesOrderLine.order_id == SalesOrder.id)
-        .join(Product, Product.id == SalesOrderLine.product_id, isouter=True)
-    ).all()
-    created = 0
-    alerts = 0
-    for o, ln in rows:
-        if not ln.product_id or ln.product is None:
-            continue
-        p = ln.product
-        ordered = float(ln.quantity or 0)
-        fulfilled = float(disp_by_order.get(o.id, 0.0) or 0.0)
-        balance = ordered - fulfilled
-        if balance <= 0:
-            continue
-        available = inv.get(p.id, 0.0)
-        shortage = balance - available
-        if shortage <= 0:
-            continue
-        src = p.source_type
-        src_val = src.value if src else "UNKNOWN"
-        if src_val == "MANUFACTURED":
-            cat, rtype = "PRODUCTION", "RAW_MATERIAL"
-        elif src_val == "TRADING":
-            cat, rtype = "PURCHASE", "TRADING_PRODUCT"
-        else:
-            continue  # manual decision - do not auto-create transaction
-        pr = upsert_purchase_requirement(
-            db, product_id=p.id, required_qty=balance, available_qty=available,
-            shortage_qty=shortage, category=cat, requirement_type=rtype,
-            customer_id=o.customer_id, sales_order_id=o.id,
-            sales_order_line_id=ln.id, source_type=src_val,
-            notes=f"Shortage for {o.order_no}", commit=False,
-        )
-        if pr and getattr(pr, "_just_created", False):
-            created += 1
-    db.commit()
+    fulfilment state. Dedupe-safe (upserts existing open requirements). Uses
+    the shared sync engine (single source of truth for shortage calc)."""
+    res = sync_purchase_shortages(db)
+    created = res["requirements_created"]
+    alerts = res["alerts_generated"]
 
-    # regenerate alerts from material requirement engine
+    # additionally regenerate raw-material alerts from the BOM engine
     from .material_requirements import material_requirements_summary
     summary = material_requirements_summary(db, user)
     for agg in summary["rm_aggregate"]:

@@ -1,7 +1,7 @@
 """Supplier management (CRUD)."""
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -71,7 +71,16 @@ def update_supplier(supplier_id: int, body: SupplierUpdate, db: Annotated[Sessio
 def delete_supplier(supplier_id: int, db: Annotated[Session, Depends(get_db)],
                     user: ManagerOrAdmin):
     sup = get_or_404(db, Supplier, supplier_id)
-    db.delete(sup)
-    db.commit()
+    po_count = db.scalar(select(func.count()).select_from(PurchaseOrder).where(PurchaseOrder.supplier_id == supplier_id))
+    if po_count:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=f"Cannot delete supplier: referenced by {po_count} purchase order(s). Deactivate or reuse it instead.")
+    try:
+        db.delete(sup)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=f"Cannot delete supplier: referenced by other records. Deactivate or reuse it instead.")
     write_audit(db, user, "DELETE", "suppliers", supplier_id, f"Deleted supplier {sup.name}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

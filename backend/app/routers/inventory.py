@@ -1,7 +1,7 @@
 """Inventory management: stock levels, movements, low-stock alerts."""
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -14,6 +14,8 @@ from ..models import (
 from ..schemas import (
     InventoryOut, StockMovementIn, StockMovementOut,
 )
+from ..services.business import sync_purchase_shortages
+from ..services.reorder_alerts import refresh_reorder_alert
 from datetime import date
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
@@ -86,7 +88,7 @@ def create_movement(body: StockMovementIn, db: Annotated[Session, Depends(get_db
     """Record a stock movement and update the matching inventory row."""
     get_or_404(db, Product, body.product_id)
     if body.quantity <= 0:
-        raise status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Quantity must be greater than 0")
     m = StockMovement(product_id=body.product_id, plant_id=body.plant_id,
                       movement_type=body.movement_type, quantity=body.quantity,
                       transaction_date=body.transaction_date, remarks=body.remarks)
@@ -105,10 +107,13 @@ def create_movement(body: StockMovementIn, db: Annotated[Session, Depends(get_db
         inv.issued_qty = float(inv.issued_qty or 0) + body.quantity
         inv.current_stock = float(inv.current_stock or 0) - body.quantity
     db.add(m)
+    db.flush()
+    refresh_reorder_alert(db, body.product_id)
     db.commit()
     db.refresh(m)
     write_audit(db, user, "CREATE", "stock_movements", m.id,
                 f"{body.movement_type.value} {body.quantity} for product {body.product_id}")
+    sync_purchase_shortages(db)
     return m
 
 

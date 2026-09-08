@@ -1,14 +1,14 @@
 """Product catalogue management (CRUD)."""
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..auth import CurrentUser, ManagerOrAdmin
 from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
-from ..models import Product, ProductCategory
+from ..models import Inventory, Product, ProductCategory
 from ..schemas import ProductCreate, ProductOut, ProductUpdate
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -72,7 +72,15 @@ def update_product(product_id: int, body: ProductUpdate, db: Annotated[Session, 
 def delete_product(product_id: int, db: Annotated[Session, Depends(get_db)],
                    user: ManagerOrAdmin):
     p = get_or_404(db, Product, product_id)
-    db.delete(p)
-    db.commit()
+    if db.scalar(select(func.count()).select_from(Inventory).where(Inventory.product_id == product_id)):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="Cannot delete product: it has inventory/stock records. Deactivate it instead.")
+    try:
+        db.delete(p)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="Cannot delete product: referenced by other records. Deactivate it instead.")
     write_audit(db, user, "DELETE", "products", product_id, f"Deleted product {p.model}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

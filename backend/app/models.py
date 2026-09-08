@@ -298,6 +298,8 @@ class RawMaterialBalance(Base):
     completion_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     balance_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
     opening_stock: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_stock: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_stock: Mapped[float | None] = mapped_column(Float, nullable=True)
     source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
     import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
     notes: Mapped[str] = mapped_column(Text, default="")
@@ -311,6 +313,7 @@ class PurchaseOrder(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     po_number: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True, index=True)
+    supplier_name: Mapped[str] = mapped_column(String(255), default="", index=True)
     order_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
     status: Mapped[PurchaseStatus] = mapped_column(
         Enum(PurchaseStatus), default=PurchaseStatus.ordered, index=True
@@ -331,6 +334,7 @@ class PurchaseOrderLine(Base):
     po_id: Mapped[int] = mapped_column(ForeignKey("purchase_orders.id"), index=True)
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
     description: Mapped[str] = mapped_column(Text, default="")
+    item_code: Mapped[str] = mapped_column(String(120), default="", index=True)
     quantity: Mapped[float] = mapped_column(Float, default=0)
     received_qty: Mapped[float] = mapped_column(Float, default=0)
     rate: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
@@ -382,6 +386,90 @@ class StockMovement(Base):
 
     product: Mapped[Product] = relationship()
     plant: Mapped[Plant | None] = relationship()
+
+
+# ---------------------------------------------------------------------------
+# Stock transfers (Main Store -> Dispatch / Production)
+# ---------------------------------------------------------------------------
+class StockTransfer(Base):
+    """Location-to-location stock movement document.
+
+    Main Store is plant_id = NULL (existing convention). Internal locations
+    (Dispatch, Production) are seeded Plants. Customer is optional transaction
+    reference only — no allocation/reservation concept.
+    """
+
+    __tablename__ = "stock_transfers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transfer_no: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    from_plant_id: Mapped[int | None] = mapped_column(ForeignKey("plants.id"), nullable=True, index=True)
+    to_plant_id: Mapped[int] = mapped_column(ForeignKey("plants.id"), index=True)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
+    customer_name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    transfer_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    lines: Mapped[list[StockTransferLine]] = relationship(back_populates="transfer", cascade="all, delete-orphan")
+    from_plant: Mapped[Plant | None] = relationship(foreign_keys=[from_plant_id])
+    to_plant: Mapped[Plant | None] = relationship(foreign_keys=[to_plant_id])
+    customer: Mapped[Customer | None] = relationship()
+
+
+class StockTransferLine(Base):
+    __tablename__ = "stock_transfer_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transfer_id: Mapped[int] = mapped_column(ForeignKey("stock_transfers.id"), index=True)
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
+    item_code: Mapped[str] = mapped_column(String(120), default="", index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    quantity: Mapped[float] = mapped_column(Float, default=0)
+
+    transfer: Mapped[StockTransfer] = relationship(back_populates="lines")
+    product: Mapped[Product | None] = relationship()
+
+
+# ---------------------------------------------------------------------------
+# Simple customer dispatch (stock-based, additive to Sales-Order Dispatch)
+# ---------------------------------------------------------------------------
+class CustomerDispatch(Base):
+    """Actual dispatch of stock OUT of the Dispatch location to a customer.
+
+    Each dispatch is an independent, date-wise historical transaction. Customer
+    is optional (transaction reference). Independent from the sales-order-driven
+    `Dispatch` module which remains untouched.
+    """
+
+    __tablename__ = "customer_dispatches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dispatch_no: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
+    customer_name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    plant_id: Mapped[int | None] = mapped_column(ForeignKey("plants.id"), nullable=True, index=True)
+    dispatch_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
+    remarks: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    lines: Mapped[list[CustomerDispatchLine]] = relationship(back_populates="dispatch", cascade="all, delete-orphan")
+    customer: Mapped[Customer | None] = relationship()
+    plant: Mapped[Plant | None] = relationship()
+
+
+class CustomerDispatchLine(Base):
+    __tablename__ = "customer_dispatch_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dispatch_id: Mapped[int] = mapped_column(ForeignKey("customer_dispatches.id"), index=True)
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
+    item_code: Mapped[str] = mapped_column(String(120), default="", index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    quantity: Mapped[float] = mapped_column(Float, default=0)
+
+    dispatch: Mapped[CustomerDispatch] = relationship(back_populates="lines")
+    product: Mapped[Product | None] = relationship()
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +537,9 @@ class SalesOrder(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     order_no: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
+    customer_name: Mapped[str] = mapped_column(String(255), default="", index=True)
     order_type: Mapped[OrderType] = mapped_column(Enum(OrderType), default=OrderType.oem, index=True)
+    local_order_type: Mapped[str] = mapped_column(String(20), default="TRADING")
     customer_po_no: Mapped[str] = mapped_column(String(120), default="", index=True)
     salesperson_id: Mapped[int | None] = mapped_column(ForeignKey("salespersons.id"), nullable=True)
     period_id: Mapped[int | None] = mapped_column(ForeignKey("reporting_periods.id"), nullable=True, index=True)
@@ -480,6 +570,7 @@ class SalesOrderLine(Base):
     quantity: Mapped[float] = mapped_column(Float, default=0)
     customer_po_no: Mapped[str] = mapped_column(String(120), default="")
     unit_price: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    less: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
     import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True, index=True)
@@ -617,13 +708,35 @@ class PurchaseRequirement(Base):
 # ---------------------------------------------------------------------------
 # Bill of Materials (BOM)
 # ---------------------------------------------------------------------------
+class BOM(Base):
+    """BOM header — ONE BOM (unique BOM Code) groups MULTIPLE raw material lines."""
+    __tablename__ = "boms"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bom_code: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    effective_date: Mapped[date] = mapped_column(Date, default=date.today)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    product: Mapped[Product] = relationship(foreign_keys=[product_id])
+    lines: Mapped[list[BillOfMaterial]] = relationship(
+        back_populates="bom", cascade="all, delete-orphan", foreign_keys="BillOfMaterial.bom_id",
+    )
+
+
 class BillOfMaterial(Base):
-    """Product → Raw Material mapping. User-entered, never invented."""
+    """Raw Material line under a BOM (product → raw material mapping).
+    User-entered, never invented."""
     __tablename__ = "bill_of_materials"
     __table_args__ = (UniqueConstraint("product_id", "raw_material_product_id", "version",
                                        name="uq_bom_product_rm_version"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    bom_id: Mapped[int | None] = mapped_column(ForeignKey("boms.id"), nullable=True, index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     raw_material_product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     quantity_per_unit: Mapped[float] = mapped_column(Float, default=0)
@@ -637,6 +750,7 @@ class BillOfMaterial(Base):
 
     product: Mapped[Product] = relationship(foreign_keys=[product_id])
     raw_material: Mapped[Product] = relationship(foreign_keys=[raw_material_product_id])
+    bom: Mapped[BOM | None] = relationship(back_populates="lines", foreign_keys=[bom_id])
 
 
 # ---------------------------------------------------------------------------
