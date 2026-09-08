@@ -603,9 +603,19 @@ def completed_production_for_dispatch(
         .where(ProductionOrder.status == ProductionStatus.completed)
     )
     if date_from:
-        stmt = stmt.where(ProductionOrder.completion_date >= date.fromisoformat(date_from))
+        try:
+            from_date = date.fromisoformat(date_from)
+        except ValueError:
+            from_date = None
+        if from_date:
+            stmt = stmt.where(ProductionOrder.completion_date >= from_date)
     if date_to:
-        stmt = stmt.where(ProductionOrder.completion_date <= date.fromisoformat(date_to))
+        try:
+            to_date = date.fromisoformat(date_to)
+        except ValueError:
+            to_date = None
+        if to_date:
+            stmt = stmt.where(ProductionOrder.completion_date <= to_date)
     stmt = stmt.order_by(
         ProductionOrder.completion_date.desc().nullslast(),
         ProductionOrder.report_date.desc(),
@@ -691,9 +701,19 @@ def local_order_dispatch(
         .where(SalesOrder.order_type == OrderType.local)
     )
     if date_from:
-        stmt = stmt.where(SalesOrder.order_date >= date.fromisoformat(date_from))
+        try:
+            from_date = date.fromisoformat(date_from)
+        except ValueError:
+            from_date = None
+        if from_date:
+            stmt = stmt.where(SalesOrder.order_date >= from_date)
     if date_to:
-        stmt = stmt.where(SalesOrder.order_date <= date.fromisoformat(date_to))
+        try:
+            to_date = date.fromisoformat(date_to)
+        except ValueError:
+            to_date = None
+        if to_date:
+            stmt = stmt.where(SalesOrder.order_date <= to_date)
     stmt = stmt.order_by(SalesOrder.order_date.desc(), SalesOrder.id.desc())
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = db.scalars(stmt.offset((page - 1) * page_size).limit(page_size)).all()

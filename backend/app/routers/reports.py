@@ -222,7 +222,7 @@ def customers_csv(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
 def suppliers_csv(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
     rows = db.scalars(select(Supplier).order_by(Supplier.name)).all()
     headers = ["Name", "Code", "Contact", "Email", "Address"]
-    data = [[s.name, s.code or "", s.contact or "", s.email or "", s.address or ""] for s in rows]
+    data = [[s.name, s.code or "", s.contact_person or "", s.email or "", s.address or ""] for s in rows]
     return _csv_response(headers, data, "suppliers.csv")
 
 
@@ -321,7 +321,7 @@ def excel_report(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
 
     supp = db.scalars(select(Supplier).order_by(Supplier.name)).all()
     add_sheet("Suppliers", ["Name", "Code", "Contact", "Email", "Address"],
-              [[s.name, s.code or "", s.contact or "", s.email or "", s.address or ""] for s in supp])
+              [[s.name, s.code or "", s.contact_person or "", s.email or "", s.address or ""] for s in supp])
 
     plants = db.scalars(select(Plant).order_by(Plant.name)).all()
     add_sheet("Plants", ["Code", "Name"],

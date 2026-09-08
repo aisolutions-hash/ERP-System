@@ -3,7 +3,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -190,6 +190,31 @@ def _serve_frontend(path: str):
     if target.is_file():
         return FileResponse(target)
     return FileResponse(index)
+
+
+@app.middleware("http")
+async def spa_html_navigation(request: Request, call_next):
+    """Serve the SPA for real browser navigations.
+
+    API routers (e.g. /production, /orders, /local-orders) are registered
+    before the SPA catch-all, so a hard refresh on a page URL would otherwise
+    hit an authenticated API route and return 401 {"detail":"Not authenticated"}.
+    Browser navigations send Accept: text/html; API calls from the SPA send
+    Accept: application/json, so this only affects genuine page loads.
+    """
+    accept = request.headers.get("accept", "")
+    path = request.url.path
+    if (
+        request.method == "GET"
+        and "text/html" in accept
+        and _FRONTEND_DIST.exists()
+        and path not in ("/", "/health", "/docs", "/redoc", "/openapi.json")
+        and not path.startswith("/assets/")
+    ):
+        index = _FRONTEND_DIST / "index.html"
+        if index.exists():
+            return FileResponse(index)
+    return await call_next(request)
 
 
 if _FRONTEND_DIST.exists():
