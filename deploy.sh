@@ -139,6 +139,9 @@ if [[ -n "$RUNNER_SA" ]]; then
     --role="roles/storage.objectViewer" --condition=None >/dev/null 2>&1 || echo "  (storage role may need manual grant)"
 fi
 
+# Ensure 100% traffic always goes to the newest revision (avoids stale traffic pinning)
+gcloud run services update-traffic "$SERVICE" --region="${REGION}" --project="${PROJECT_ID}" --to-latest
+
 echo ""
 echo "=== 6/6  Deployment done ==="
 URL="$(gcloud run services describe "$SERVICE" --region="${REGION}" --project="${PROJECT_ID}" --format='value(status.url)')"
