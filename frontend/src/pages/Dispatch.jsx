@@ -365,6 +365,12 @@ export default function Dispatch() {
   ]
 
   const openDispatchNow = (pr) => {
+    let qty = pr.available_qty ?? ''
+    if (pr.sales_order_id && pr.sales_order_line_id) {
+      const o = orderOf(pr.sales_order_id)
+      const line = (o?.lines || []).find((l) => l.id === pr.sales_order_line_id)
+      if (line?.balance_qty != null && line.balance_qty < qty) qty = line.balance_qty
+    }
     openNewDispatch({
       customer_id: pr.customer_id ?? null,
       customer_name: pr.customer?.name || '',
@@ -372,8 +378,9 @@ export default function Dispatch() {
       schedule_qty: pr.schedule_qty || pr.available_qty || '',
       lines: [{
         product_id: pr.product_id ?? '', item_code: pr.item_code || '',
-        description: pr.model || '', quantity: pr.available_qty ?? '',
+        description: pr.model || '', quantity: qty,
         dispatch_date: today(),
+        sales_order_line_id: pr.sales_order_line_id ?? null,
       }],
     })
     flash(`Dispatch Now — ${pr.model || pr.item_code || ''} (available: ${fmtNum(pr.available_qty)})`)

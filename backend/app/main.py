@@ -33,6 +33,7 @@ _COLUMN_MIGRATIONS = [
     ("stock_transfers", "customer_name", "VARCHAR(255)"),
     ("customer_dispatches", "customer_name", "VARCHAR(255)"),
     ("bill_of_materials", "bom_id", "INTEGER"),
+    ("plans", "sales_order_id", "INTEGER"),
 ]
 
 # Internal stock locations seeded as Plants (Main Store = plant_id NULL).

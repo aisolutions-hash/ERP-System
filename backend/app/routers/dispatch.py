@@ -9,7 +9,7 @@ from ..auth import CurrentUser, AllStaff, ManagerOrAdmin
 from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
 from ..models import (
-    Customer, Dispatch, DispatchLine, DispatchStatus, MovementType,
+    Customer, Dispatch, DispatchLine, DispatchStatus, Inventory, MovementType,
     OrderStatus, OrderType, Plan, PlanType, Plant, Product, ProductionOrder,
     ProductionStatus, SalesOrder, SalesOrderLine, StockMovement,
 )
@@ -675,6 +675,28 @@ def customer_items(
     return {"items": items, "total": len(items)}
 
 
+def _completed_line_attribution(db: Session, sales_order_id, product_id) -> int | None:
+    """Resolve the open LOCAL-order line a completed production record feeds,
+    so "Dispatch Now" attributes the dispatch to the correct order line (which
+    in turn drives the order balance). Only LOCAL orders use this attribution;
+    standard sales orders keep their existing flow untouched."""
+    if not sales_order_id or not product_id:
+        return None
+    o = db.get(SalesOrder, sales_order_id)
+    if o is None or o.order_type != OrderType.local:
+        return None
+    line = db.scalar(select(SalesOrderLine).where(
+        SalesOrderLine.order_id == o.id,
+        SalesOrderLine.product_id == product_id,
+    ).order_by(SalesOrderLine.id).limit(1))
+    if line is None:
+        return None
+    remaining = order_line_remaining(db, line.id)
+    if remaining is not None and remaining <= 0:
+        return None
+    return line.id
+
+
 @router.get("/completed-production", response_model=dict)
 def completed_production_for_dispatch(
     db: Annotated[Session, Depends(get_db)],
@@ -732,6 +754,22 @@ def completed_production_for_dispatch(
         .group_by(StockMovement.product_id)
     ).all())
 
+    # Only stock physically sitting at the Dispatch location is dispatchable.
+    # Finished goods posted to the Main Store (plan output) or still on the
+    # Production floor are NOT offered until transferred to Disparch — otherwise
+    # the feed advertises quantities the C1 guard then refuses to dispatch.
+    dispatch_plant_id = db.scalar(select(Plant.id).where(Plant.name == "Dispatch"))
+    dispatch_stock_by_product: dict[int, float] = {}
+    if dispatch_plant_id:
+        dispatch_stock_by_product = dict(db.execute(
+            select(
+                Inventory.product_id,
+                func.coalesce(func.sum(Inventory.current_stock), 0),
+            )
+            .where(Inventory.plant_id == dispatch_plant_id)
+            .group_by(Inventory.product_id)
+        ).all())
+
     stmt = (
         select(ProductionOrder)
         .where(ProductionOrder.status == ProductionStatus.completed)
@@ -769,10 +807,13 @@ def completed_production_for_dispatch(
                     po_no = sol or ""
 
         # Available qty = finished-goods pool for this product (produced
-        # production_output movements - dispatch movements).
+        # production_output movements - dispatch movements) CAPPED at the stock
+        # physically present at the Dispatch location, so the feed never offers
+        # goods that are still in the Main Store or on the production floor.
         produced_total = float(produced_by_product.get(po.product_id, 0.0) or 0)
         dispatched_total = float(dispatched_by_product.get(po.product_id, 0.0) or 0)
-        available_qty = produced_total - dispatched_total
+        pool = produced_total - dispatched_total
+        available_qty = min(pool, float(dispatch_stock_by_product.get(po.product_id, 0.0) or 0))
         if available_qty <= 0:
             continue
 
@@ -793,6 +834,8 @@ def completed_production_for_dispatch(
             "available_qty": available_qty,
             "status": po.status.value,
             "remarks": po.remarks,
+            "sales_order_id": po.sales_order_id,
+            "sales_order_line_id": _completed_line_attribution(db, po.sales_order_id, po.product_id),
         })
 
     # --- Completed production PLANS (finished goods posted to Main Store) ---
@@ -821,9 +864,11 @@ def completed_production_for_dispatch(
         if pl.customer_id:
             c = db.get(Customer, pl.customer_id)
             customer = {"id": c.id, "name": c.name} if c else None
-        produced = float(pl.quantity or 0)
         dispatched = float(dispatched_by_product.get(pl.product_id, 0.0) or 0)
-        available_qty = float(produced_by_product.get(pl.product_id, 0.0) or 0) - dispatched
+        pool = float(produced_by_product.get(pl.product_id, 0.0) or 0) - dispatched
+        # Also cap at Dispatch-location stock: a plan completed to the Main Store
+        # is only listed once the finished goods reach the Dispatch location.
+        available_qty = min(pool, float(dispatch_stock_by_product.get(pl.product_id, 0.0) or 0))
         if available_qty <= 0:
             continue
 
@@ -844,6 +889,8 @@ def completed_production_for_dispatch(
             "available_qty": available_qty,
             "status": "Completed",
             "remarks": pl.remarks,
+            "sales_order_id": pl.sales_order_id,
+            "sales_order_line_id": _completed_line_attribution(db, pl.sales_order_id, pl.product_id),
         })
 
     # Most recent completions first, then paginate over the combined list.

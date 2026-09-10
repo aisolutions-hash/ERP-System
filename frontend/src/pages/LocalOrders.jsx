@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Plus, Eye, Pencil, X, Store, ClipboardList, CheckCircle2, Trash2, Truck, Calendar, PackageSearch, ArrowLeftRight } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Plus, Eye, Pencil, X, Store, ClipboardList, CheckCircle2, Trash2, Truck, Calendar, PackageSearch, ArrowLeftRight, Factory } from 'lucide-react'
 import api from '../lib/api'
 import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard, StatusBadge, SearchSelect } from '../components/ui'
 import Table from '../components/Table'
@@ -18,6 +19,7 @@ const errText = (err) => {
 }
 
 export default function LocalOrders() {
+  const navigate = useNavigate()
   const [rows, setRows] = useState([])
   const [plans, setPlans] = useState([])
   const [loading, setLoading] = useState(true)
@@ -46,6 +48,8 @@ export default function LocalOrders() {
   const [success, setSuccess] = useState('')
 
   const flash = (text) => { setSuccess(text); setTimeout(() => setSuccess(''), 6000) }
+
+  const goToProduction = (orderId) => navigate(`/production?order=${orderId}`)
 
   const load = () => {
     setLoading(true)
@@ -342,7 +346,9 @@ export default function LocalOrders() {
     { key: 'actions', label: '', render: (r) => (
       <div className="flex items-center gap-0.5">
         <button onClick={() => openDetail(r)} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="View"><Eye size={14} /></button>
-        {r.stock_summary?.transfer_required ? (
+        {r.status === 'Production Required' ? (
+          <button onClick={() => goToProduction(r.id)} className="text-amber-600 hover:text-amber-800 p-1 hover:bg-amber-50 rounded" title="Manufacture — create a production plan for this order"><Factory size={14} /></button>
+        ) : r.stock_summary?.transfer_required ? (
           <button onClick={() => transferForOrder(r)} className="text-violet-600 hover:text-violet-800 p-1 hover:bg-violet-50 rounded" title="Stock exists — transfer Main Store → Dispatch"><ArrowLeftRight size={14} /></button>
         ) : (
           <button onClick={() => openNewEntry(r, (r.lines || [])[0])} className="text-blue-500 hover:text-blue-700 p-1 hover:bg-blue-50 rounded" title="Dispatch now"><Truck size={14} /></button>
@@ -451,7 +457,9 @@ export default function LocalOrders() {
       {/* Detail modal */}
       <Modal open={!!detail} title={detail && !detail.loading ? `Local Order ${detail.order_no}` : 'Loading…'} onClose={() => setDetail(null)} wide
         footer={<>
-          {detail && !detail.loading && (detail.stock_summary?.transfer_required
+          {detail && !detail.loading && (detail.status === 'Production Required'
+            ? <button onClick={() => { const orderId = detail.id; setDetail(null); goToProduction(orderId) }} className="btn btn-primary mr-auto"><Factory size={14} className="mr-1" /> Go to Production</button>
+            : detail.stock_summary?.transfer_required
             ? <button onClick={() => transferForOrder(detail)} className="btn btn-secondary mr-auto"><ArrowLeftRight size={14} className="mr-1" /> Transfer to Dispatch</button>
             : <button onClick={() => openNewEntry(detail, (detail.lines || [])[0])} className="btn btn-primary mr-auto"><Truck size={14} className="mr-1" /> Dispatch</button>)}
           <button onClick={() => setDetail(null)} className="btn btn-secondary">Close</button>

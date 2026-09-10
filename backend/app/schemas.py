@@ -727,6 +727,7 @@ class PlanCreate(BaseModel):
     product_id: Optional[int] = None
     customer_id: Optional[int] = None
     customer_name: str = ""
+    sales_order_id: Optional[int] = None
     quantity: Optional[float] = None
     rate: Optional[float] = None
     weight: Optional[float] = None
@@ -741,6 +742,7 @@ class PlanUpdate(BaseModel):
     product_id: Optional[int] = None
     customer_id: Optional[int] = None
     customer_name: Optional[str] = None
+    sales_order_id: Optional[int] = None
     quantity: Optional[float] = None
     rate: Optional[float] = None
     weight: Optional[float] = None
@@ -756,6 +758,7 @@ class PlanOut(ORMModel):
     model: str
     product_id: Optional[int]
     customer_id: Optional[int]
+    sales_order_id: Optional[int]
     quantity: Optional[float]
     rate: Optional[float]
     weight: Optional[float]

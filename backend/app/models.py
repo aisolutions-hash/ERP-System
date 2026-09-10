@@ -653,6 +653,7 @@ class Plan(Base):
     model: Mapped[str] = mapped_column(String(500), index=True)
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
+    sales_order_id: Mapped[int | None] = mapped_column(ForeignKey("sales_orders.id"), nullable=True, index=True)
     quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
     rate: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     weight: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -668,6 +669,7 @@ class Plan(Base):
 
     product: Mapped[Product | None] = relationship()
     customer: Mapped[Customer | None] = relationship()
+    sales_order: Mapped[SalesOrder | None] = relationship()
 
 
 # ---------------------------------------------------------------------------

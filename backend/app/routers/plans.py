@@ -11,10 +11,11 @@ from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
 from ..models import (
     Customer, MovementType, Plan, PlanType, Plant, Product, ProductCategory,
-    ProductSourceType, StockMovement,
+    ProductSourceType, SalesOrder, StockMovement,
 )
 from ..schemas import PlanCreate, PlanOut, PlanUpdate
 from ..services.customers import get_or_create_customer
+from ..services.local_orders import sync_local_orders_for_products
 from ..services.reorder_alerts import refresh_reorder_alert
 from ..services.stock_service import (
     apply_movement, get_or_create_inventory, reverse_and_remove_ref,
@@ -44,17 +45,22 @@ def _post_plan_output(db: Session, p: Plan) -> None:
         StockMovement.ref_type == "plan",
         StockMovement.ref_id == p.id,
     ).limit(1))
-    if already:
-        return
-    apply_movement(
-        db, p.product_id, MovementType.production_output, float(p.quantity),
-        p.plan_date or date.today(),
-        ref_type="plan", ref_id=p.id,
-        remarks=f"Production output {p.model}",
-        plant_id=None,
-    )
+    if not already:
+        apply_movement(
+            db, p.product_id, MovementType.production_output, float(p.quantity),
+            p.plan_date or date.today(),
+            ref_type="plan", ref_id=p.id,
+            remarks=f"Production output {p.model}",
+            plant_id=None,
+        )
+        if p.product_id:
+            refresh_reorder_alert(db, p.product_id)
+    # Re-evaluate any local orders that source this product: once the finished
+    # goods are in the Main Store the order moves to "Stock Transfer Required"
+    # (re-salving an already-completed plan re-syncs too, so orders created
+    # before this fix catch up as soon as the plan is touched again).
     if p.product_id:
-        refresh_reorder_alert(db, p.product_id)
+        sync_local_orders_for_products(db, [p.product_id])
 
 
 def _plan_output_movements(db: Session, plan_id: int) -> list[StockMovement]:
@@ -105,6 +111,7 @@ def _reverse_plan_output(db: Session, p: Plan) -> None:
     reverse_and_remove_ref(db, "plan", p.id)
     if p.product_id:
         refresh_reorder_alert(db, p.product_id)
+        sync_local_orders_for_products(db, [p.product_id])
 
 
 def _resolve_product(db: Session, product_id, model) -> Product | None:
@@ -137,6 +144,18 @@ def _resolve_customer(db: Session, customer_id, customer_name) -> int | None:
     if customer_id:
         return get_or_404(db, Customer, int(customer_id)).id
     return None
+
+
+def _resolve_sales_order(db: Session, sales_order_id) -> int | None:
+    """Validates the plan's linked sales order (Local Order or standard SO).
+    None clears the link."""
+    if sales_order_id is None:
+        return None
+    o = db.get(SalesOrder, int(sales_order_id))
+    if o is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Sales order {sales_order_id} not found")
+    return o.id
 
 
 @router.get("", response_model=dict)
@@ -174,6 +193,7 @@ def create_plan(body: PlanCreate, db: Annotated[Session, Depends(get_db)],
         data["model"] = prod.model
     data["customer_id"] = _resolve_customer(db, data.get("customer_id"), data.get("customer_name", ""))
     data.pop("customer_name", None)
+    data["sales_order_id"] = _resolve_sales_order(db, data.get("sales_order_id"))
     p = Plan(**data)
     db.add(p)
     db.commit()
@@ -202,6 +222,8 @@ def update_plan(plan_id: int, body: PlanUpdate, db: Annotated[Session, Depends(g
         cid = data.get("customer_id", p.customer_id)
         data["customer_id"] = _resolve_customer(db, cid, cname)
     data.pop("customer_name", None)
+    if "sales_order_id" in data:
+        data["sales_order_id"] = _resolve_sales_order(db, data.get("sales_order_id"))
     valid = {k: v for k, v in data.items() if k in PlanUpdate.model_fields}
     apply_updates(p, PlanUpdate(**valid))
     now_completed = (p.status or "").strip().upper() == "COMPLETED" and p.plan_type == PlanType.production

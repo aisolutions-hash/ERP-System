@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Plus, Pencil, RefreshCw, CalendarClock, Factory, GitCompareArrows, Trash2 } from 'lucide-react'
 import api from '../lib/api'
 import { PageHeader, Card, Modal, Loading, Empty, Badge, PageTabs, StatCard, SearchSelect } from '../components/ui'
@@ -12,6 +13,7 @@ const TABS = [
 ]
 
 export default function Production() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [tab, setTab] = useState('plan')
   const [plans, setPlans] = useState([])
   const [actual, setActual] = useState([])
@@ -45,11 +47,40 @@ export default function Production() {
 
   useEffect(() => { load(); loadProducts(); loadCustomers() }, [])
 
+  // "Go to Production" from a Local Order: open the New Plan modal, pre-filled
+  // from the order (product + qty + customer), already linked back to the order
+  // so completing the plan flows the finished goods to that order automatically.
+  useEffect(() => {
+    const orderId = searchParams.get('order')
+    if (!orderId) return
+    api.get(`/local-orders/${orderId}`)
+      .then((r) => {
+        const o = r.data
+        const line = (o.lines || [0])[0] || {}
+        setForm({
+          product_id: line.product_id || null,
+          model: line.model || line.description || '',
+          customer_id: o.customer_id || null,
+          customer_name: o.customer_name || o.customer || '',
+          quantity: line.quantity,
+          plan_date: new Date().toISOString().slice(0, 10),
+          status: 'PENDING',
+          sales_order_id: o.id,
+          remarks: `Local order ${o.order_no}`,
+        })
+        setShowPlanForm(true)
+        setSearchParams({}, { replace: true })
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const savePlan = () => {
     const payload = {
       plan_type: 'PRODUCTION_PLAN', model: form.model || '',
       product_id: form.product_id || null, customer_id: form.customer_id || null,
       customer_name: form.customer_name || '',
+      sales_order_id: form.sales_order_id || null,
       quantity: form.quantity != null ? Number(form.quantity) : null,
       owner: form.owner || '', status: form.status || 'PENDING',
       plan_date: form.plan_date || new Date().toISOString().slice(0, 10),
@@ -83,7 +114,7 @@ export default function Production() {
     { key: 'remarks', label: 'Remarks', render: (r) => <span className="text-slate-500 text-xs">{r.remarks || '—'}</span> },
     { key: 'edit', label: '', render: (r) => (
       <div className="flex items-center gap-0.5">
-        <button onClick={() => { setForm({ id: r.id, model: r.model, product_id: r.product_id, customer_id: r.customer_id, customer_name: r.customer_name || r.customer?.name || '', quantity: r.quantity, owner: r.owner, status: r.status, plan_date: r.plan_date, remarks: r.remarks }); setShowPlanForm(true) }} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="Edit"><Pencil size={15} /></button>
+        <button onClick={() => { setForm({ id: r.id, model: r.model, product_id: r.product_id, customer_id: r.customer_id, customer_name: r.customer_name || r.customer?.name || '', sales_order_id: r.sales_order_id, quantity: r.quantity, owner: r.owner, status: r.status, plan_date: r.plan_date, remarks: r.remarks }); setShowPlanForm(true) }} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="Edit"><Pencil size={15} /></button>
         <button onClick={(e) => { e.stopPropagation(); removePlan(r) }} className="text-slate-400 hover:text-red-600 p-1 hover:bg-red-50 rounded" title="Delete"><Trash2 size={14} /></button>
       </div>
     )},

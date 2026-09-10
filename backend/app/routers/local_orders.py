@@ -25,7 +25,7 @@ from ..crud import write_audit
 from ..database import get_db
 from ..models import (
     Customer, Dispatch, DispatchLine, OrderStatus, OrderType, Plan,
-    ProductionOrder, PurchaseRequirement, SalesOrder,
+    Product, ProductionOrder, PurchaseRequirement, SalesOrder,
     SalesOrderLine,
 )
 from ..schemas import LocalOrderCreate, LocalOrderUpdate
@@ -35,6 +35,7 @@ from ..services.local_orders import (
     check_ready, normalize_local_type, serialize_local_order,
     sync_local_order_status,
 )
+from ..services.stock_service import resolve_or_create_product
 from datetime import date
 
 router = APIRouter(prefix="/local-orders", tags=["local-orders"])
@@ -74,18 +75,53 @@ def _resolve_customer(db: Session, body) -> tuple[int | None, str]:
     return (c.id, c.name) if c else (None, body.customer_name.strip())
 
 
+def _resolve_line_products(db: Session, raw_lines) -> list[tuple[int | None, dict]]:
+    """Local order ROOT FIX: every line must map to a real Product.
+
+    A line that already carries a product_id is trusted as-is (never text
+    matched — "production never runs by description/name alone"). A product-less
+    line is resolved to an existing or lazily-created Product keyed on
+    (item_code, model); with no Item Code the description gets its own fresh
+    Product so the line is stock-trackable. Returns (rid, normalized_payload)
+    pairs with product_id and item_code always populated. Raises 400 when a line
+    has nothing to key on.
+    """
+    out: list[tuple[int | None, dict]] = []
+    for raw in raw_lines:
+        rid = getattr(raw, "id", None)
+        data = (raw.model_dump(exclude={"id"}, exclude_none=True)
+                if hasattr(raw, "model_dump") else dict(raw))
+        pid = data.get("product_id")
+        if pid is not None:
+            prod = db.get(Product, int(pid))
+            if prod is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail=f"Product {pid} not found")
+        else:
+            prod = resolve_or_create_product(
+                db, data.get("item_code") or "", data.get("description") or "",
+                allow_blank=True)
+            if prod is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Each order line needs a product — select one or enter an item code / size description")
+        data["product_id"] = prod.id
+        data["item_code"] = (data.get("item_code") or "").strip() or (prod.item_code or "")
+        out.append((rid, data))
+    return out
+
+
 def _apply_lines(db: Session, o: SalesOrder, raw_lines) -> None:
     """In-place order-line update preserving line ids (so historical dispatch
     attribution keeps working). Lines with dispatch history cannot be removed."""
     existing = {ln.id: ln for ln in o.lines}
     seen = set()
-    for raw in raw_lines:
-        rid = getattr(raw, "id", None)
-        data = raw.model_dump(exclude={"id"}, exclude_none=True) if hasattr(raw, "model_dump") else raw
+    for rid, data in _resolve_line_products(db, raw_lines):
         if rid and rid in existing:
             ln = existing[rid]
             ln.product_id = data.get("product_id")
             ln.description = (data.get("description") or "").strip()
+            ln.item_code = (data.get("item_code") or "").strip()
             ln.quantity = float(data.get("quantity") or 0)
             ln.unit_price = data.get("unit_price")
             ln.less = data.get("less")
@@ -96,6 +132,7 @@ def _apply_lines(db: Session, o: SalesOrder, raw_lines) -> None:
             o.lines.append(SalesOrderLine(
                 product_id=data.get("product_id"),
                 description=(data.get("description") or "").strip(),
+                item_code=(data.get("item_code") or "").strip(),
                 quantity=float(data.get("quantity") or 0),
                 unit_price=data.get("unit_price"),
                 less=data.get("less"),
@@ -200,7 +237,8 @@ def create_local_order(body: LocalOrderCreate, db: Annotated[Session, Depends(ge
         raise HTTPException(status_code=400,
                             detail="Add at least one order line with a quantity greater than 0")
     customer_id, customer_name = _resolve_customer(db, body)
-    lines = [SalesOrderLine(**ln.model_dump(exclude={"id"})) for ln in body.lines]
+    resolved = _resolve_line_products(db, body.lines)
+    lines = [SalesOrderLine(**data) for _, data in resolved]
     o = SalesOrder(order_no=body.order_no or _local_no(db),
                    customer_id=customer_id, customer_name=customer_name,
                    order_type=OrderType.local,
@@ -277,6 +315,7 @@ def delete_local_order(order_id: int, db: Annotated[Session, Depends(get_db)],
                             detail="Cannot delete local order: it has dispatches.")
     db.execute(update(ProductionOrder).where(ProductionOrder.sales_order_id == o.id)
                .values(sales_order_id=None))
+    db.execute(update(Plan).where(Plan.sales_order_id == o.id).values(sales_order_id=None))
     db.execute(delete(PurchaseRequirement).where(PurchaseRequirement.sales_order_id == o.id))
     db.delete(o)
     db.commit()
