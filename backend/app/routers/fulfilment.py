@@ -41,7 +41,7 @@ def fulfilment_view(
         select(SalesOrder, SalesOrderLine)
         .join(SalesOrderLine, SalesOrderLine.order_id == SalesOrder.id)
         .join(Product, Product.id == SalesOrderLine.product_id, isouter=True)
-        .order_by(SalesOrder.order_no)
+        .order_by(SalesOrder.order_date.desc(), SalesOrder.id.desc())
     ).all()
     out = []
     for o, ln in rows:

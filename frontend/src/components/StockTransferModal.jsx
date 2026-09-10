@@ -30,13 +30,12 @@ export default function StockTransferModal({
   const [form, setForm] = useState(null)
   const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
-  const nextTransferNo = () => `TR-${today().replace(/-/g, '')}-${Date.now().toString().slice(-4)}`
 
   useEffect(() => {
     if (open) {
       const init = {
         id: initial?.id ?? null,
-        transfer_no: initial?.transfer_no ?? nextTransferNo(),
+        transfer_no: initial?.transfer_no ?? null,
         from_plant_id: initial?.from_plant_id ?? '',
         to_plant_id: initial?.to_plant_id ?? '',
         customer_id: initial?.customer_id ?? null,

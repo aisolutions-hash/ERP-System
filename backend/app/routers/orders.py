@@ -264,6 +264,7 @@ def pending_orders(
                           SalesOrder.order_date < next_month)
     elif mode == "previous":
         stmt = stmt.where(SalesOrder.order_date < month_start)
+    stmt = stmt.order_by(SalesOrder.order_date.desc(), SalesOrder.id.desc())
     rows = db.execute(stmt).all()
     items = []
     for o, ln in rows:

@@ -156,7 +156,7 @@ def production_readiness(
     """Per-product production material readiness (ready / shortage / no bom)."""
     products = db.query(Product).filter(
         Product.category != ProductCategory.trading
-    ).all()
+    ).order_by(Product.id.desc()).all()
     out = []
     for p in products:
         r = production_material_readiness(db, p.id)

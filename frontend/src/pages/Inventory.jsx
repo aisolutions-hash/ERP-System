@@ -229,9 +229,8 @@ export default function Inventory() {
 
   // ---- transfer helpers ----
   const openNewTransfer = () => {
-    const seq = String(transfers.length + 1).padStart(3, '0')
     setTransferInit({
-      id: null, transfer_no: `TR-${today().replace(/-/g, '')}-${seq}`,
+      id: null, transfer_no: null,
       from_plant_id: '', to_plant_id: '', customer_id: null, customer_name: '',
       transfer_date: today(), notes: '', lines: [blankLine()],
     })

@@ -9,6 +9,7 @@ import { fmtNum, CompletionBar } from '../lib/format'
 const TABS = [
   { key: 'dispatches', label: 'Dispatches', icon: <Truck size={15} /> },
   { key: 'customer', label: 'Customer Dispatch', icon: <Users size={15} /> },
+  { key: 'dispatch-stock', label: 'Dispatch Stock', icon: <Package size={15} /> },
   { key: 'production', label: 'Completed Production', icon: <Factory size={15} /> },
   { key: 'local', label: 'Local Orders', icon: <Package size={15} /> },
 ]
@@ -76,6 +77,11 @@ export default function Dispatch() {
   const [localExpanded, setLocalExpanded] = useState(null)
   const [localFilter, setLocalFilter] = useState('')
   const [localReadyOnly, setLocalReadyOnly] = useState(false)
+
+  // --- Dispatch stock state ---
+  const [dispatchStock, setDispatchStock] = useState([])
+  const [dispatchStockLoading, setDispatchStockLoading] = useState(true)
+  const [dispatchStockTotal, setDispatchStockTotal] = useState(0)
 
   // --- Stock transfer (reposition for local orders) state ---
   const [locations, setLocations] = useState([])
@@ -400,6 +406,17 @@ export default function Dispatch() {
   }
   useEffect(() => { if (tab === 'local') loadLocal() }, [tab, localFrom, localTo, localReadyOnly])
 
+  // --- Dispatch stock ---
+  const loadDispatchStock = () => {
+    if (!dispatchPlantId) return
+    setDispatchStockLoading(true)
+    api.get('/inventory', { params: { plant_id: dispatchPlantId, page_size: 500 } })
+      .then((r) => { setDispatchStock(r.data.items || []); setDispatchStockTotal(r.data.total || 0) })
+      .catch(() => setDispatchStock([]))
+      .finally(() => setDispatchStockLoading(false))
+  }
+  useEffect(() => { if (tab === 'dispatch-stock' && dispatchPlantId) loadDispatchStock() }, [tab, dispatchPlantId])
+
   const dispatchLocal = (o, ln) => {
     openNewDispatch({
       customer_id: o.customer_id ?? null,
@@ -482,6 +499,16 @@ export default function Dispatch() {
 
   const localExpandedOrder = localOrders.find((o) => o.id === localExpanded)
 
+  // --- Dispatch stock columns ---
+  const dispatchStockCols = [
+    { key: 'product.model', label: 'Product', render: (r) => <span className="font-medium">{r.product?.model || '—'}</span> },
+    { key: 'product.item_code', label: 'Item Code', render: (r) => <span className="font-mono text-xs">{r.product?.item_code || '—'}</span> },
+    { key: 'product.category', label: 'Category', render: (r) => r.product?.category || '—' },
+    { key: 'current_stock', label: 'Quantity', render: (r) => <span className="font-semibold">{fmtNum(r.current_stock)}</span> },
+    { key: 'product.uom', label: 'Unit', render: (r) => r.product?.uom || '—' },
+    { key: 'status', label: 'Status', render: (r) => <StatusBadge status={r.status} /> },
+  ]
+
   // --- Dispatches tab derived ---
   const dTotSched = disps.reduce((s, x) => s + (Number(x.schedule_qty) || 0), 0)
   const dTotDisp = disps.reduce((s, x) => s + (Number(x.dispatched_qty) || 0), 0)
@@ -535,6 +562,7 @@ export default function Dispatch() {
   const refreshAll = () => {
     if (tab === 'dispatches') loadDisps()
     if (tab === 'customer') { loadSummary(); if (selected) selectCustomer(selected) }
+    if (tab === 'dispatch-stock') loadDispatchStock()
     if (tab === 'production') loadProduction()
     if (tab === 'local') loadLocal()
   }
@@ -593,6 +621,16 @@ export default function Dispatch() {
           <StatCard label="Total Dispatch Lines" value={summary.reduce((s, x) => s + (x.count || 0), 0)} icon={ClipboardCheck} iconClass="bg-blue-50 text-blue-600" />
           <StatCard label="Over-fulfilled" value={summary.filter((s) => s.over_dispatched).length} icon={AlertTriangle} iconClass="bg-red-50 text-red-600" valueClass="text-red-600" />
           <StatCard label="Dispatch Done" value={fmtNum(summary.reduce((s, x) => s + (x.total_dispatched || 0), 0))} icon={Truck} iconClass="bg-cyan-50 text-cyan-600" />
+        </div>
+      )}
+
+      {/* Stat cards (dispatch stock tab) */}
+      {tab === 'dispatch-stock' && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+          <StatCard label="Stock Lines" value={dispatchStockTotal} icon={Package} iconClass="bg-amber-50 text-amber-600" />
+          <StatCard label="Total Quantity" value={fmtNum(dispatchStock.reduce((s, x) => s + (Number(x.current_stock) || 0), 0))} icon={ClipboardCheck} iconClass="bg-blue-50 text-blue-600" />
+          <StatCard label="Low Stock" value={dispatchStock.filter((x) => x.status === 'LOW').length} icon={AlertTriangle} iconClass="bg-red-50 text-red-600" valueClass="text-red-600" />
+          <StatCard label="Out of Stock" value={dispatchStock.filter((x) => x.status === 'OUT_OF_STOCK').length} icon={AlertTriangle} iconClass="bg-red-50 text-red-600" valueClass="text-red-600" />
         </div>
       )}
 
@@ -768,6 +806,21 @@ export default function Dispatch() {
                 </div>
               )}
             </>
+          )}
+        </Card>
+      )}
+
+      {/* ==================== DISPATCH STOCK TAB ==================== */}
+      {tab === 'dispatch-stock' && (
+        <Card title="Dispatch Department Stock" subtitle={`${dispatchStockTotal} stock line(s) at Dispatch location`}>
+          <div className="flex flex-wrap gap-2 mb-4 items-center">
+            {!dispatchPlantId && <p className="text-sm text-red-500">Dispatch location not found — ensure internal locations are seeded</p>}
+            <a href={`/inventory?plant_id=${dispatchPlantId || ''}`} className="btn btn-outline ml-auto text-xs">
+              View in Inventory
+            </a>
+          </div>
+          {dispatchStockLoading ? <Loading /> : dispatchStock.length === 0 ? <Empty text="No stock found at Dispatch location — transfer stock from Main Store first" /> : (
+            <Table columns={dispatchStockCols} data={dispatchStock} keyField="id" dense />
           )}
         </Card>
       )}

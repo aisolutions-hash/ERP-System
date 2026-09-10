@@ -209,7 +209,8 @@ def list_local(
 def local_plans(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
     p = db.scalars(select(Plan).where(
         or_(Plan.plan_type == "PRODUCTION_PLAN",
-            Plan.plan_type == "DISPATCH_PLAN"))).all()
+            Plan.plan_type == "DISPATCH_PLAN"))
+        .order_by(Plan.plan_date.desc(), Plan.id.desc())).all()
     items = [{
         "id": pl.id, "plan_type": pl.plan_type.value, "model": pl.model,
         "customer": pl.customer.name if pl.customer else None,

@@ -177,7 +177,7 @@ def list_plans(
         like = f"%{search}%"
         stmt = stmt.where(Plan.model.ilike(like))
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
-    rows = db.scalars(stmt.order_by(Plan.plan_date.desc(), Plan.id)
+    rows = db.scalars(stmt.order_by(Plan.plan_date.desc(), Plan.id.desc())
                       .offset((page - 1) * page_size).limit(page_size)).all()
     return {"items": [PlanOut.model_validate(p).model_dump() for p in rows],
             "total": total, "page": page, "page_size": page_size}

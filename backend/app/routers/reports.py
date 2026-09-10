@@ -38,7 +38,7 @@ def _csv_response(headers, rows, filename):
 
 @router.get("/inventory/csv")
 def inventory_csv(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
-    rows = db.scalars(select(Inventory)).all()
+    rows = db.scalars(select(Inventory).order_by(Inventory.product_id)).all()
     headers = ["Product", "Item Code", "Category", "Plant", "Opening", "Received", "Issued", "Current Stock", "Min Level", "Status"]
     data = []
     for i in rows:
@@ -277,7 +277,7 @@ def excel_report(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
     if "Sheet" in wb.sheetnames:
         del wb["Sheet"]
 
-    inv = db.scalars(select(Inventory)).all()
+    inv = db.scalars(select(Inventory).order_by(Inventory.product_id)).all()
     add_sheet("Inventory", ["Product", "Item Code", "Category", "Plant", "Opening", "Received", "Issued",
                             "Current Stock", "Min Level", "Status"],
               [[i.product.model if i.product else "", i.product.item_code if i.product else "",
@@ -362,7 +362,8 @@ def _delivery_rows(db: Session, customer_id: int | None = None,
     that could not be safely attributed so no data is hidden.
     """
     stmt = (select(SalesOrder, SalesOrderLine)
-            .join(SalesOrderLine, SalesOrderLine.order_id == SalesOrder.id))
+            .join(SalesOrderLine, SalesOrderLine.order_id == SalesOrder.id)
+            .order_by(SalesOrder.order_date.desc(), SalesOrder.id.desc()))
     if customer_id:
         stmt = stmt.where(SalesOrder.customer_id == customer_id)
     if date_from:
