@@ -86,7 +86,7 @@ export default function LocalOrders() {
   }
 
   const openCreate = () => {
-    setForm({ customer_id: null, customer_name: '', local_order_type: 'TRADING', order_date: today(), delivery_date: '', remarks: '', lines: [{ ...emptyLine }] })
+    setForm({ customer_id: null, customer_name: '', local_order_type: 'TRADING', order_date: today(), delivery_date: '', remarks: '', so_no: '', customer_po_no: '', lines: [{ ...emptyLine }] })
     setErrors({})
     setEditing(null)
     setShowOrderForm(true)
@@ -97,6 +97,8 @@ export default function LocalOrders() {
       customer_id: r.customer_id, customer_name: r.customer_name || r.customer || '',
       local_order_type: r.order_type || 'TRADING',
       order_date: r.order_date || today(), delivery_date: r.delivery_date || '',
+      so_no: r.so_no || '',
+      customer_po_no: r.customer_po_no || '',
       remarks: r.commitment || r.remarks || '',
       lines: (r.lines || []).map((ln) => ({
         id: ln.id, product_id: ln.product_id, item_code: ln.item_code || '',
@@ -148,6 +150,8 @@ export default function LocalOrders() {
     local_order_type: form.local_order_type || 'TRADING',
     order_date: form.order_date || today(),
     required_delivery_date: form.delivery_date || null,
+    so_no: (form.so_no || '').trim(),
+    customer_po_no: (form.customer_po_no || '').trim(),
     remarks: form.remarks || '',
     status: editing ? undefined : 'New',
     lines: (form.lines || []).map((l) => ({
@@ -180,23 +184,28 @@ export default function LocalOrders() {
 
   // ---- dispatch entries (actual dispatch, reuses the sales-order Dispatch module) ----
   const openNewEntry = (order, line) => {
+    // Available stock for this line = current balance at the Dispatch location.
+    const sl = (order?.stock?.lines || []).find((s) => s.line_id === line?.id)
     setEntry({
       id: null, dispatch_no: '', order: order, order_line_id: line?.id ?? null,
       product_id: line?.product_id ?? null, item_code: line?.item_code || '',
       description: line?.description || line?.model || '', quantity: line ? (line.balance_qty > 0 ? line.balance_qty : '') : '',
       dispatch_date: today(), rate: line?.rate ?? '', weight: '',
+      available: sl?.tracked ? (Number(sl.available_dispatch) || 0) : null, oldQty: 0,
     })
     setEntryErr(null)
     setShowEntry(true)
   }
 
   const openEditEntry = (ln) => {
+    const sl = (detail?.stock?.lines || []).find((s) => s.line_id === ln.sales_order_line_id)
     setEntry({
       id: null, entry_line_id: ln.entry_line_id, dispatch_no: ln.dispatch_no, order: detail,
       order_line_id: ln.sales_order_line_id ?? null,
       product_id: ln.product_id ?? null, item_code: ln.item_code || '',
       description: ln.description || '', quantity: ln.quantity ?? '',
       dispatch_date: ln.dispatch_date || today(), rate: ln.rate ?? '', weight: ln.weight ?? '',
+      available: sl?.tracked ? (Number(sl.available_dispatch) || 0) : null, oldQty: Number(ln.quantity) || 0,
     })
     setEntryErr(null)
     setShowEntry(true)
@@ -207,6 +216,21 @@ export default function LocalOrders() {
     if (!entry.product_id && !(entry.item_code || '').trim() && !(entry.description || '').trim()) {
       setEntryErr('Select or enter the product / item'); return
     }
+    // Local Order dispatch is capped at BOTH the current stock at the Dispatch
+    // location AND the order line's remaining (Balance) quantity.
+    const maxQty = entryMax
+    if (maxQty != null && Number(entry.quantity) > maxQty) {
+      const why = []
+      if (entryRemaining != null && Number(entry.quantity) > Number(entryRemaining) + Number(entry.oldQty || 0)) {
+        why.push(`only ${fmtNum(entryRemaining)} remaining to dispatch on the order line`)
+      }
+      if (entryStockCap != null && Number(entry.quantity) > entryStockCap) {
+        why.push(`available stock is ${fmtNum(entry.available)}`)
+      }
+      setEntryErr(`Dispatch quantity cannot exceed ${why.length ? why.join(' and ') : `the maximum of ${fmtNum(maxQty)}`}.`)
+      return
+    }
+    if (entryMax != null && entryMax <= 0) { setEntryErr('Nothing left to dispatch — this order line is already fully dispatched.'); return }
     const line = {
       product_id: entry.product_id ? Number(entry.product_id) : null,
       item_code: entry.item_code || '',
@@ -290,6 +314,8 @@ export default function LocalOrders() {
 
   const orderCols = [
     { key: 'order_no', label: 'Order', render: (r) => <span className="font-mono text-xs font-medium">{r.order_no || '—'}</span> },
+    { key: 'so_no', label: 'SO Number', render: (r) => <span className="font-mono text-xs">{r.so_no || '—'}</span> },
+    { key: 'customer_po_no', label: 'PO Number', render: (r) => <span className="font-mono text-xs">{r.customer_po_no || '—'}</span> },
     { key: 'customer', label: 'Customer', render: (r) => <span className="font-medium">{r.customer || '—'}</span> },
     { key: 'order_type', label: 'Type', render: (r) => <Badge className={r.order_type === 'MANUFACTURING' ? 'bg-violet-100 text-violet-700' : 'bg-cyan-100 text-cyan-700'}>{r.order_type || 'TRADING'}</Badge> },
     { key: 'order_date', label: 'Order Date', render: (r) => r.order_date || '—' },
@@ -383,6 +409,18 @@ export default function LocalOrders() {
     }))
   )
 
+  // Remaining balance (Schedule minus Dispatched) for the current dispatch entry.
+  const entryLine = (entry?.order?.lines || []).find((l) => l.id === entry?.order_line_id)
+  const entryRemaining = entryLine != null ? Number(entryLine.balance_qty) : null
+  const entryStockCap = entry?.available != null ? Number(entry.available) + Number(entry.oldQty || 0) : null
+  const entryMax = entryRemaining != null || entryStockCap != null
+    ? Math.min(
+        entryRemaining != null ? Number(entryRemaining) + Number(entry.oldQty || 0) : Infinity,
+        entryStockCap != null ? entryStockCap : Infinity,
+      )
+    : null
+  const entryTooBig = entryMax != null && Number(entry.quantity || 0) > entryMax
+
   if (loading) return <Loading />
   return (
     <div className="animate-fade-in-up">
@@ -422,6 +460,8 @@ export default function LocalOrders() {
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4 text-sm">
               <div><span className="text-slate-500 block text-xs">Customer</span><span className="font-medium">{detail.customer || '—'}</span></div>
+              <div><span className="text-slate-500 block text-xs">SO Number</span><span className="font-mono text-xs font-medium">{detail.so_no || '—'}</span></div>
+              <div><span className="text-slate-500 block text-xs">PO Number</span><span className="font-mono text-xs font-medium">{detail.customer_po_no || '—'}</span></div>
               <div><span className="text-slate-500 block text-xs">Order Type</span><Badge className={detail.order_type === 'MANUFACTURING' ? 'bg-violet-100 text-violet-700' : 'bg-cyan-100 text-cyan-700'}>{detail.order_type || 'TRADING'}</Badge></div>
               <div><span className="text-slate-500 block text-xs">Order Date</span><span className="font-medium">{detail.order_date}</span></div>
               <div><span className="text-slate-500 block text-xs">Delivery Date</span><span className="font-medium">{detail.delivery_date || '—'}</span></div>
@@ -517,6 +557,14 @@ export default function LocalOrders() {
             {errors.customer_id && <p className="text-xs text-red-600 mt-1">{errors.customer_id}</p>}
           </div>
           <div>
+            <label className="block text-slate-500 text-xs mb-1">SO Number <span className="text-slate-400">(manual)</span></label>
+            <input value={form.so_no || ''} onChange={(e) => setForm({ ...form, so_no: e.target.value })} placeholder="e.g. ABC/2026/00125" className="input" />
+          </div>
+          <div>
+            <label className="block text-slate-500 text-xs mb-1">PO Number <span className="text-slate-400">(manual)</span></label>
+            <input value={form.customer_po_no || ''} onChange={(e) => setForm({ ...form, customer_po_no: e.target.value })} placeholder="e.g. PO/2026/00088" className="input" />
+          </div>
+          <div>
             <label className="block text-slate-500 text-xs mb-1">Order Type</label>
             <select value={form.local_order_type || 'TRADING'} onChange={(e) => setForm({ ...form, local_order_type: e.target.value })} className="input">
               <option value="TRADING">Trading</option>
@@ -543,8 +591,9 @@ export default function LocalOrders() {
             </div>
 
             {(form.lines || []).map((l, i) => (
-              <div key={i} className="grid grid-cols-1 sm:grid-cols-12 gap-2 mb-3 p-3 rounded-lg bg-slate-50/70 border border-gray-100">
-                <div className="sm:col-span-3">
+              <div key={i} className="relative grid grid-cols-2 sm:grid-cols-12 gap-2 mb-3 p-3 rounded-lg bg-slate-50/70 border border-gray-100">
+                <button onClick={() => removeLine(i)} className="absolute top-2 right-2 text-red-400 hover:text-red-600 p-1 hover:bg-red-50 rounded" title="Remove item"><X size={14} /></button>
+                <div className="col-span-2 sm:col-span-4">
                   <label className="block text-slate-500 text-[0.6875rem] mb-1">Product</label>
                   <SearchSelect
                     options={products.map((p) => ({ id: p.id, label: `${p.model}${p.item_code ? ` (${p.item_code})` : ''}` }))}
@@ -556,33 +605,30 @@ export default function LocalOrders() {
                   />
                   {errors[`line_${i}_product`] && <p className="text-xs text-red-600 mt-1">{errors[`line_${i}_product`]}</p>}
                 </div>
-                <div className="sm:col-span-2">
+                <div className="col-span-2 sm:col-span-3">
                   <label className="block text-slate-500 text-[0.6875rem] mb-1">Size / Description</label>
                   <input value={l.description || ''} onChange={(e) => updateLine(i, 'description', e.target.value)} className="input py-1.5" />
                 </div>
-                <div className="sm:col-span-2">
+                <div className="col-span-2 sm:col-span-5">
                   <label className="block text-slate-500 text-[0.6875rem] mb-1">Item Code</label>
                   <input value={l.item_code || ''} onChange={(e) => updateLine(i, 'item_code', e.target.value)} placeholder="e.g. LAP-001" className="input py-1.5" />
                 </div>
-                <div className="sm:col-span-1">
+                <div className="col-span-1 sm:col-span-3">
                   <label className="block text-slate-500 text-[0.6875rem] mb-1">Qty <span className="text-red-500">*</span></label>
                   <input type="number" min="1" step="any" value={l.quantity ?? ''} onChange={(e) => updateLine(i, 'quantity', e.target.value)} className="input py-1.5" />
                   {errors[`line_${i}_qty`] && <p className="text-xs text-red-600 mt-1">{errors[`line_${i}_qty`]}</p>}
                 </div>
-                <div className="sm:col-span-1">
+                <div className="col-span-1 sm:col-span-3">
                   <label className="block text-slate-500 text-[0.6875rem] mb-1">Rate</label>
                   <input type="number" min="0" step="any" value={l.unit_price ?? ''} onChange={(e) => updateLine(i, 'unit_price', e.target.value)} placeholder="0" className="input py-1.5" />
                 </div>
-                <div className="sm:col-span-1">
+                <div className="col-span-1 sm:col-span-3">
                   <label className="block text-slate-500 text-[0.6875rem] mb-1">Less</label>
                   <input type="number" min="0" step="any" value={l.less ?? ''} onChange={(e) => updateLine(i, 'less', e.target.value)} placeholder="0" className="input py-1.5" />
                 </div>
-                <div className="sm:col-span-1">
+                <div className="col-span-1 sm:col-span-3">
                   <label className="block text-slate-500 text-[0.6875rem] mb-1">Amount</label>
-                  <div className="input py-1.5 bg-white text-right font-mono text-xs text-slate-800">{fmtNum(lineAmt(l))}</div>
-                </div>
-                <div className="sm:col-span-1 flex items-end justify-end pb-0.5">
-                  <button onClick={() => removeLine(i)} className="text-red-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded" title="Remove item"><X size={14} /></button>
+                  <div className="input input-num py-1.5 bg-white text-right font-mono text-slate-800 whitespace-nowrap overflow-hidden text-ellipsis">{fmtNum(lineAmt(l))}</div>
                 </div>
               </div>
             ))}
@@ -605,9 +651,19 @@ export default function LocalOrders() {
         <Modal open title={entry.entry_line_id ? `Edit Dispatch Entry — ${entry.dispatch_no}` : `Dispatch Local Order ${entry.order?.order_no || ''}`} onClose={() => setShowEntry(false)}
           footer={<>
             <button onClick={() => setShowEntry(false)} className="btn btn-secondary">Cancel</button>
-            <button onClick={saveEntry} disabled={entrySaving} className="btn btn-primary">{entrySaving ? 'Saving…' : entry.entry_line_id ? 'Save Entry' : 'Record Dispatch'}</button>
+            <button onClick={saveEntry} disabled={entrySaving || entryTooBig || (entryMax != null && entryMax <= 0)} className="btn btn-primary">{entrySaving ? 'Saving…' : entry.entry_line_id ? 'Save Entry' : 'Record Dispatch'}</button>
           </>}>
           {entryErr && <div className="mb-3 text-sm state-box bg-red-50 text-red-700 border border-red-200">{entryErr}</div>}
+          {entryRemaining != null && (
+            <div className={`mb-3 rounded-lg px-3 py-2 text-xs flex items-center gap-2 border ${
+              entryRemaining > 0 ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-green-50 border-green-200 text-green-700'
+            }`}>
+              <Truck size={14} className="shrink-0" />
+              {entryRemaining > 0
+                ? <span>Schedule <b>{fmtNum(Number(entryLine.quantity) || 0)}</b> · Dispatched <b>{fmtNum(Number(entryLine.dispatched_qty) || 0)}</b> · <b>Remaining to Dispatch: {fmtNum(entryRemaining)}</b></span>
+                : <span>Order line fully dispatched — Balance 0. This order will be marked <b>Completed</b>.</span>}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3 text-sm mb-3">
             <div className="col-span-2"><label className="block text-slate-500 text-xs mb-1">Product</label>
               <SearchSelect
@@ -625,7 +681,17 @@ export default function LocalOrders() {
             <div><label className="block text-slate-500 text-xs mb-1">Item Code</label>
               <input value={entry.item_code || ''} onChange={(e) => setEntry({ ...entry, item_code: e.target.value })} className="input" /></div>
             <div><label className="block text-slate-500 text-xs mb-1">Dispatch Qty <span className="text-red-500">*</span></label>
-              <input value={entry.quantity ?? ''} type="number" min="0" step="any" onChange={(e) => setEntry({ ...entry, quantity: e.target.value })} className="input" /></div>
+              <input value={entry.quantity ?? ''} type="number" min="0" step="any"
+                max={entryMax != null ? entryMax : undefined}
+                onChange={(e) => { const v = e.target.value; setEntry({ ...entry, quantity: v }); const tooBig = entryMax != null && Number(v) > entryMax; if (tooBig) { const why = []; if (entryRemaining != null && Number(v) > Number(entryRemaining) + Number(entry.oldQty || 0)) why.push(`only ${fmtNum(entryRemaining)} remaining to dispatch`); if (entryStockCap != null && Number(v) > entryStockCap) why.push(`available stock is ${fmtNum(entry.available)}`); setEntryErr(`Dispatch quantity cannot exceed ${why.join(' and ')}.`); } else setEntryErr(null) }} className="input" />
+              <p className="text-xs mt-1">
+                {entryTooBig && <span className="text-red-600 font-medium">Max allowed: {fmtNum(entryMax)}</span>}
+                {entryRemaining != null && !entryTooBig && <span className="text-slate-500">Remaining to Dispatch: <b>{fmtNum(entryRemaining)}</b>{entry.oldQty ? <span className="text-slate-400"> (incl. current entry {fmtNum(entry.oldQty)})</span> : null}</span>}
+                {entryRemaining == null && entry.available != null && !entryTooBig
+                  ? <span className={entryTooBig ? 'text-red-600 font-medium' : 'text-slate-500'}>Available Stock: {fmtNum(entry.available)}{entry.oldQty ? <span className="text-slate-400"> (incl. current entry {fmtNum(entry.oldQty)})</span> : null}</span>
+                  : entry.available != null && !entryTooBig ? <span className="text-slate-400"> · Available Stock: {fmtNum(entry.available)}</span> : null}
+                {entryRemaining == null && entry.available == null && <span className="text-slate-400 italic">Tracked stock / balance unknown for this item</span>}
+              </p></div>
             <div><label className="block text-slate-500 text-xs mb-1">Dispatch Date</label>
               <input type="date" value={entry.dispatch_date} onChange={(e) => setEntry({ ...entry, dispatch_date: e.target.value })} className="input" /></div>
             <div><label className="block text-slate-500 text-xs mb-1">Rate</label>

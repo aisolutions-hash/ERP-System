@@ -11,7 +11,7 @@ from ..database import get_db
 from ..models import (
     Customer, Dispatch, DispatchLine, OrderStatus, OrderType, Product,
     ProductSourceType, ProductionOrder, PurchaseRequirement, SalesOrder,
-    SalesOrderLine, StockMovement, MovementType,
+    SalesOrderLine, Salesperson, StockMovement, MovementType,
 )
 from ..schemas import (
     SalesOrderCreate, SalesOrderLineIn, SalesOrderLineUpdate, SalesOrderOut,
@@ -24,10 +24,22 @@ from datetime import date
 router = APIRouter(prefix="/orders", tags=["orders"])
 
 
-def _next_no(db: Session) -> str:
-    prefix = f"SO-{date.today().strftime('%Y%m%d')}-"
-    n = db.scalar(select(func.count()).select_from(SalesOrder).where(SalesOrder.order_no.like(f"{prefix}%")))
-    return f"{prefix}{n + 1:03d}"
+def _resolve_salesperson(db: Session, name: str) -> Salesperson | None:
+    """Find an existing salesperson by typed name (case-insensitive), creating
+    one only when the name is genuinely new. Manual entry mirrors the customer
+    auto-create flow and never duplicates a current name."""
+    name = (name or "").strip()
+    if not name:
+        return None
+    existing = db.scalar(select(Salesperson)
+                         .where(func.lower(Salesperson.name) == name.lower())
+                         .order_by(Salesperson.id).limit(1))
+    if existing:
+        return existing
+    sp = Salesperson(name=name)
+    db.add(sp)
+    db.flush()
+    return sp
 
 
 def _line_stock_status(order_type, product, ordered: float, dispatched: float,
@@ -85,6 +97,7 @@ def _serialize_order(db: Session, o: SalesOrder) -> dict:
         st = _line_stock_status(o.order_type, ln.product, ordered, disp, available)
         lines.append({
             "id": ln.id, "product_id": ln.product_id, "description": ln.description,
+            "item_code": ln.item_code or (ln.product.item_code if ln.product else "") or "",
             "quantity": ordered, "customer_po_no": ln.customer_po_no,
             "unit_price": float(ln.unit_price) if ln.unit_price is not None else None,
             "less": float(ln.less) if ln.less is not None else None,
@@ -181,6 +194,8 @@ def create_order(body: SalesOrderCreate, db: Annotated[Session, Depends(get_db)]
                  user: AllStaff):
     if body.customer_id is None and not (body.customer_name or "").strip():
         raise HTTPException(status_code=400, detail="Customer is required (select an existing one or type a name)")
+    if not (body.order_no or "").strip():
+        raise HTTPException(status_code=400, detail="SO Number is required (enter the actual Sales Order number)")
     if not body.lines:
         raise HTTPException(status_code=400, detail="Add at least one order line")
     for ln in body.lines:
@@ -195,11 +210,16 @@ def create_order(body: SalesOrderCreate, db: Annotated[Session, Depends(get_db)]
         c = get_or_create_customer(db, body.customer_name)
         body.customer_id = c.id if c else None
         body.customer_name = c.name if c else body.customer_name
+    # A manually typed salesperson is resolved/reused (no duplicates).
+    salesperson_id = body.salesperson_id
+    if not salesperson_id and (body.salesperson_name or "").strip():
+        sp = _resolve_salesperson(db, body.salesperson_name)
+        salesperson_id = sp.id if sp else None
     lines = [SalesOrderLine(**ln.model_dump()) for ln in body.lines]
-    o = SalesOrder(order_no=body.order_no or _next_no(db), customer_id=body.customer_id,
+    o = SalesOrder(order_no=(body.order_no or "").strip()[:120], customer_id=body.customer_id,
                    customer_name=(body.customer_name or "").strip(),
                    order_type=body.order_type, customer_po_no=body.customer_po_no,
-                   salesperson_id=body.salesperson_id,
+                   salesperson_id=salesperson_id,
                    order_date=body.order_date, required_delivery_date=body.required_delivery_date,
                    status=body.status, remarks=body.remarks, lines=lines)
     _recalc_total(o, lines)
@@ -297,6 +317,8 @@ def update_order_line(line_id: int, body: SalesOrderLineUpdate,
         ln.product_id = body.product_id
     if body.description is not None:
         ln.description = body.description
+    if body.item_code is not None:
+        ln.item_code = (body.item_code or "").strip()[:120]
     if body.quantity is not None:
         ln.quantity = body.quantity
     if body.unit_price is not None:
@@ -320,12 +342,20 @@ def update_order_line(line_id: int, body: SalesOrderLineUpdate,
 def update_order(order_id: int, body: SalesOrderUpdate, db: Annotated[Session, Depends(get_db)],
                  user: AllStaff):
     o = get_or_404(db, SalesOrder, order_id)
+    if "order_no" in body.model_fields_set and not (body.order_no or "").strip():
+        raise HTTPException(status_code=400, detail="SO Number is required and cannot be blank")
     apply_updates(o, body, exclude={"lines"})
     if (body.customer_name or "").strip():
         c = get_or_create_customer(db, body.customer_name)
         if c:
             o.customer_id = c.id
             o.customer_name = c.name
+    # Salesperson: explicit id wins; otherwise a typed name is reused/created.
+    if body.salesperson_id is not None:
+        o.salesperson_id = body.salesperson_id
+    elif (body.salesperson_name or "").strip():
+        sp = _resolve_salesperson(db, body.salesperson_name)
+        o.salesperson_id = sp.id if sp else None
     if body.lines is not None:
         for ln in o.lines:
             used = db.scalar(select(func.count()).select_from(DispatchLine)

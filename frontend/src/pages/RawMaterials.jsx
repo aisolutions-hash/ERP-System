@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Plus, Pencil, Search, Download, RefreshCw, AlertTriangle, CheckCircle2, Boxes, ArrowDownToLine } from 'lucide-react'
+import {
+  Plus, Pencil, Trash2, Eye, Search, Download, RefreshCw,
+  AlertTriangle, CheckCircle2, Boxes, ArrowDownToLine, ClipboardList,
+} from 'lucide-react'
 import api, { downloadFile } from '../lib/api'
 import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard } from '../components/ui'
 import Table from '../components/Table'
@@ -13,13 +16,29 @@ const stockStatus = (item) => {
   return { label: 'Normal', cls: 'bg-green-100 text-green-700' }
 }
 
+const emptyForm = { item_code: '', model: '', name: '', uom: 'Each', min_stock_level: '' }
+
+const masterFields = (r) => ({
+  id: r.id,
+  item_code: r.item_code || '',
+  model: r.model || '',
+  name: r.name || '',
+  uom: r.uom || 'Each',
+  min_stock_level: r.min_stock_level ?? '',
+})
+
 export default function RawMaterials() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [modal, setModal] = useState(null)
-  const [form, setForm] = useState({})
+  const [modal, setModal] = useState(null) // null | 'form' | 'balance' | 'view'
+  const [editing, setEditing] = useState(false)
+  const [form, setForm] = useState(emptyForm)
+  const [balance, setBalance] = useState({})
+  const [view, setView] = useState(null)
   const [err, setErr] = useState(null)
+  const [msg, setMsg] = useState(null)
+  const [saving, setSaving] = useState(false)
 
   const load = () => {
     setLoading(true)
@@ -32,36 +51,117 @@ export default function RawMaterials() {
   useEffect(load, [])
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t) }, [search])
 
-  const openNew = () => {
-    setForm({ report_date: new Date().toISOString().slice(0, 10) })
-    setErr(null)
-    setModal('new')
+  const notify = (text, isErr = false) => {
+    if (isErr) { setMsg(null); setErr(text); return }
+    setErr(null); setMsg(text)
+    setTimeout(() => setMsg(null), 3000)
   }
-  const openEdit = (item) => {
-    setForm({
-      product_id: item.id, report_date: new Date().toISOString().slice(0, 10),
-      schedule_qty: item.balance?.schedule_qty ?? '', ask_till_date: item.balance?.ask_till_date ?? '',
-      inward_qty: item.balance?.inward_qty ?? '',
-      opening_stock: item.balance?.opening_stock ?? '',
-      min_stock: item.balance?.min_stock ?? '', max_stock: item.balance?.max_stock ?? '',
-    })
+
+  // ---------------- Raw Material master CRUD ----------------
+  const openNew = () => { setEditing(false); setForm({ ...emptyForm }); setErr(null); setModal('form') }
+  const openEdit = (row) => { setEditing(true); setForm(masterFields(row)); setErr(null); setModal('form') }
+
+  const openView = async (row) => {
     setErr(null)
-    setModal('edit')
-  }
-  const saveBalance = async () => {
+    setView(row)
+    setModal('view')
     try {
-      const params = { product_id: Number(form.product_id), report_date: form.report_date }
+      const res = await api.get(`/raw-materials/${row.id}`)
+      setView(res.data)
+    } catch (e) {
+      setView(row)
+    }
+  }
+
+  const saveMaterial = async (e) => {
+    e.preventDefault()
+    if (!(form.model || '').trim()) { notify('Material name is required', true); return }
+    setSaving(true)
+    try {
+      const payload = {
+        item_code: form.item_code.trim(),
+        model: form.model.trim(),
+        name: form.name,
+        uom: form.uom || 'Each',
+        min_stock_level: form.min_stock_level === '' ? null : Number(form.min_stock_level),
+      }
+      if (editing) {
+        await api.patch(`/raw-materials/${form.id}`, payload)
+        notify('Raw material updated')
+      } else {
+        await api.post('/raw-materials', payload)
+        notify('Raw material added')
+      }
+      setModal(null)
+      load()
+    } catch (e2) {
+      notify(e2.response?.data?.detail || 'Save failed', true)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const remove = async (row) => {
+    if (!window.confirm(`Delete raw material "${row.model}"?\n\nThis will permanently remove the master record.`)) return
+    try {
+      await api.delete(`/raw-materials/${row.id}`)
+      notify('Raw material deleted')
+      load()
+    } catch (e2) {
+      notify(e2.response?.data?.detail || 'Delete failed', true)
+    }
+  }
+
+  // ---------------- Balance update ----------------
+  const openBalance = (row) => {
+    setErr(null)
+    setBalance(row
+      ? {
+          product_id: row.id,
+          report_date: new Date().toISOString().slice(0, 10),
+          schedule_qty: row.balance?.schedule_qty ?? '',
+          ask_till_date: row.balance?.ask_till_date ?? '',
+          inward_qty: row.balance?.inward_qty ?? '',
+          opening_stock: row.balance?.opening_stock ?? '',
+          min_stock: row.balance?.min_stock ?? '',
+          max_stock: row.balance?.max_stock ?? '',
+        }
+      : { product_id: '', report_date: new Date().toISOString().slice(0, 10) })
+    setModal('balance')
+  }
+
+  const saveBalance = async () => {
+    if (!balance.product_id) { notify('Select a raw material', true); return }
+    try {
+      const params = { product_id: Number(balance.product_id), report_date: balance.report_date }
       for (const k of ['schedule_qty', 'ask_till_date', 'inward_qty', 'opening_stock', 'min_stock', 'max_stock']) {
-        if (form[k] !== '' && form[k] != null) params[k] = Number(form[k])
+        if (balance[k] !== '' && balance[k] != null) params[k] = Number(balance[k])
       }
       await api.post('/raw-materials/balances', null, { params })
-      setModal(null); setErr(null); load()
-    } catch (e) { setErr(e.response?.data?.detail || 'Save failed') }
+      notify('Balance saved')
+      setModal(null)
+      load()
+    } catch (e3) { notify(e3.response?.data?.detail || 'Save failed', true) }
   }
+
+  const field = (label, key, props = {}, grid = '') => (
+    <div className={grid}>
+      <label className="block text-slate-500 text-xs mb-1">{label}</label>
+      <input value={form[key] ?? ''} onChange={(e) => setForm({ ...form, [key]: e.target.value })} className="input" {...props} />
+    </div>
+  )
+
+  const detailRow = (label, value, mono = false) => (
+    <div className="flex items-center justify-between gap-4 py-2 border-b border-gray-50">
+      <span className="text-xs text-slate-500">{label}</span>
+      <span className={`text-sm font-medium text-slate-800 text-right ${mono ? 'font-mono' : ''}`}>{value || '—'}</span>
+    </div>
+  )
 
   const columns = [
     { key: 'item_code', label: 'Item Code', render: (r) => <span className="font-mono text-xs">{r.item_code || '—'}</span> },
     { key: 'model', label: 'Material', render: (r) => <span className="font-medium">{r.model}</span> },
+    { key: 'uom', label: 'UOM', render: (r) => r.uom || 'Each' },
     { key: 'schedule', label: 'Schedule', render: (r) => fmtNum(r.balance?.schedule_qty) },
     { key: 'inward', label: 'Inward Qty', render: (r) => fmtNum(r.balance?.inward_qty) },
     { key: 'balance', label: 'Balance', render: (r) => <span className="font-medium">{fmtNum(r.balance?.balance_qty)}</span> },
@@ -70,15 +170,18 @@ export default function RawMaterials() {
         ? <Badge className={r.balance.completion_pct >= 1 ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}>{fmtNum((r.balance.completion_pct || 0) * 100)}%</Badge>
         : '—',
     },
-    { key: 'opening', label: 'Opening', render: (r) => fmtNum(r.balance?.opening_stock) },
     { key: 'stock', label: 'Current Stock', render: (r) => <span className="font-semibold">{fmtNum(r.current_stock)}</span> },
     { key: 'min', label: 'MIN STOCK', render: (r) => r.balance?.min_stock != null ? <span className="font-mono text-xs">{fmtNum(r.balance.min_stock)}</span> : '—' },
-    { key: 'max', label: 'MAX STOCK', render: (r) => r.balance?.max_stock != null ? <span className="font-mono text-xs">{fmtNum(r.balance.max_stock)}</span> : '—' },
     { key: 'status', label: 'Status', render: (r) => { const s = stockStatus(r); return <Badge className={s.cls} dot>{s.label}</Badge> } },
     {
       key: 'actions', label: '',
       render: (r) => (
-        <button onClick={() => openEdit(r)} className="btn btn-ghost py-1 px-2 text-xs"><Pencil size={14} /> Edit</button>
+        <div className="flex gap-1">
+          <button onClick={() => openView(r)} className="btn btn-ghost p-1.5" title="View"><Eye size={15} /></button>
+          <button onClick={() => openEdit(r)} className="btn btn-ghost p-1.5" title="Edit"><Pencil size={15} /></button>
+          <button onClick={() => openBalance(r)} className="btn btn-ghost p-1.5" title="Update Balance"><ClipboardList size={15} /></button>
+          <button onClick={() => remove(r)} className="btn btn-ghost p-1.5 text-red-400" title="Delete"><Trash2 size={15} /></button>
+        </div>
       ),
     },
   ]
@@ -88,14 +191,17 @@ export default function RawMaterials() {
 
   return (
     <div className="animate-fade-in-up">
-      <PageHeader title="Raw Materials" subtitle="Schedule / inward / balance with MIN-MAX reorder stock tracking"
+      <PageHeader title="Raw Materials" subtitle="Master data, schedule / inward / balance with MIN-MAX reorder stock tracking"
         actions={
           <>
             <button onClick={() => downloadFile('/reports/raw-materials/csv', 'raw_materials.csv')} className="btn btn-secondary"><Download size={15} /> CSV</button>
             <button onClick={load} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>
-            <button onClick={openNew} className="btn btn-primary"><Plus size={15} /> Update Balance</button>
+            <button onClick={() => openBalance(null)} className="btn btn-secondary"><ClipboardList size={15} /> Update Balance</button>
+            <button onClick={openNew} className="btn btn-primary"><Plus size={15} /> Add Raw Material</button>
           </>
         } />
+
+      {msg && <div className="mb-4 text-sm state-box bg-green-50 text-green-700 border border-green-200 animate-fade-in">{msg}</div>}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         <StatCard label="Materials Tracked" value={items.length} icon={Boxes} iconClass="bg-amber-50 text-amber-600" />
@@ -110,40 +216,99 @@ export default function RawMaterials() {
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search material…" className="input input-icon sm:w-64" />
         </div>
       }>
-        {loading ? <Loading /> : items.length === 0 ? <Empty /> : <Table columns={columns} data={items} stickyColumns={['model']} dense />}
+        {loading ? <Loading /> : items.length === 0 ? <Empty text="No raw materials yet — click &quot;Add Raw Material&quot; to create your first one." /> : <Table columns={columns} data={items} keyField="id" stickyColumns={['model']} dense />}
       </Card>
 
-      <Modal open={!!modal} title={modal === 'edit' ? 'Edit Raw Material Balance' : 'Update Raw Material Balance'} onClose={() => setModal(null)}>
-        {err && <div className="mb-3 text-sm state-box bg-red-50 text-red-700 border border-red-200">{err}</div>}
-        <div className="text-sm space-y-1 mb-3 text-slate-500">
-          <div><span className="font-medium text-slate-700">{modal === 'edit' ? items.find((i) => i.id === form.product_id)?.model : 'Raw Material'}</span></div>
-          <div className="text-xs">Balance is auto-calculated as Schedule − Inward. Inward % = Inward ÷ Schedule × 100.</div>
-        </div>
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div><label className="block text-slate-500 text-xs mb-1">Report Date</label>
-            <input type="date" value={form.report_date || ''} onChange={(e) => setForm({ ...form, report_date: e.target.value })} className="input" /></div>
-          <div><label className="block text-slate-500 text-xs mb-1">Schedule Qty</label>
-            <input type="number" min="0" step="any" value={form.schedule_qty ?? ''} onChange={(e) => setForm({ ...form, schedule_qty: e.target.value })} className="input" /></div>
-          <div><label className="block text-slate-500 text-xs mb-1">Inward Qty</label>
-            <input type="number" min="0" step="any" value={form.inward_qty ?? ''} onChange={(e) => setForm({ ...form, inward_qty: e.target.value })} className="input" /></div>
-          <div><label className="block text-slate-500 text-xs mb-1">Opening Stock</label>
-            <input type="number" min="0" step="any" value={form.opening_stock ?? ''} onChange={(e) => setForm({ ...form, opening_stock: e.target.value })} className="input" /></div>
-          <div><label className="block text-slate-500 text-xs mb-1">MIN STOCK</label>
-            <input type="number" min="0" step="any" value={form.min_stock ?? ''} onChange={(e) => setForm({ ...form, min_stock: e.target.value })} className="input" /></div>
-          <div><label className="block text-slate-500 text-xs mb-1">MAX STOCK</label>
-            <input type="number" min="0" step="any" value={form.max_stock ?? ''} onChange={(e) => setForm({ ...form, max_stock: e.target.value })} className="input" /></div>
-        </div>
-        {form.schedule_qty !== '' && form.schedule_qty != null && (
-          <div className="text-xs text-slate-500 mt-3">
-            Balance preview: <span className="font-semibold text-slate-700">{fmtNum((Number(form.schedule_qty) || 0) - (Number(form.inward_qty) || 0))}</span>
-            {' · '}Inward %: <span className="font-semibold text-slate-700">{fmtNum((Number(form.schedule_qty) ? ((Number(form.inward_qty) || 0) / Number(form.schedule_qty)) * 100 : 0))}%</span>
+      {/* Add / Edit material */}
+      {modal === 'form' && (
+        <Modal open title={editing ? 'Edit Raw Material' : 'Add Raw Material'} onClose={() => setModal(null)} wide
+          footer={<>
+            <button type="button" onClick={() => setModal(null)} className="btn btn-secondary">Cancel</button>
+            <button type="submit" form="rm-form" disabled={saving} className="btn btn-primary">{saving ? 'Saving…' : 'Save'}</button>
+          </>}>
+          <form onSubmit={saveMaterial} id="rm-form" className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {field('Material Name *', 'model', { required: true, placeholder: 'e.g. Stainless Steel Coil' })}
+            {field('Item Code', 'item_code', { placeholder: 'e.g. RM-1001' })}
+            {field('UOM', 'uom', { placeholder: 'e.g. KG' })}
+            {field('MIN Stock Level', 'min_stock_level', { type: 'number', min: '0', step: 'any' })}
+            <div className="md:col-span-2">{field('Name / Description', 'name', { placeholder: 'Optional description' })}</div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Update Balance */}
+      {modal === 'balance' && (
+        <Modal open title="Update Raw Material Balance" onClose={() => setModal(null)}
+          footer={<>
+            <button type="button" onClick={() => setModal(null)} className="btn btn-secondary">Cancel</button>
+            <button onClick={saveBalance} className="btn btn-primary">Save Balance</button>
+          </>}>
+          {err && <div className="mb-3 text-sm state-box bg-red-50 text-red-700 border border-red-200">{err}</div>}
+          <div className="text-sm space-y-1 mb-3 text-slate-500">
+            <div className="text-xs">Balance is auto-calculated as Schedule − Inward. Inward % = Inward ÷ Schedule × 100.</div>
           </div>
-        )}
-        <div className="flex justify-end gap-2 mt-4">
-          <button onClick={() => setModal(null)} className="btn btn-secondary">Cancel</button>
-          <button onClick={saveBalance} className="btn btn-primary">Save Balance</button>
-        </div>
-      </Modal>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="col-span-2">
+              <label className="block text-slate-500 text-xs mb-1">Raw Material</label>
+              <select value={balance.product_id || ''} onChange={(e) => setBalance({ ...balance, product_id: e.target.value })} className="input">
+                <option value="">Select a raw material…</option>
+                {items.map((i) => <option key={i.id} value={i.id}>{i.model}{i.item_code ? ` (${i.item_code})` : ''}</option>)}
+              </select>
+            </div>
+            <div><label className="block text-slate-500 text-xs mb-1">Report Date</label>
+              <input type="date" value={balance.report_date || ''} onChange={(e) => setBalance({ ...balance, report_date: e.target.value })} className="input" /></div>
+            <div><label className="block text-slate-500 text-xs mb-1">Schedule Qty</label>
+              <input type="number" min="0" step="any" value={balance.schedule_qty ?? ''} onChange={(e) => setBalance({ ...balance, schedule_qty: e.target.value })} className="input" /></div>
+            <div><label className="block text-slate-500 text-xs mb-1">Inward Qty</label>
+              <input type="number" min="0" step="any" value={balance.inward_qty ?? ''} onChange={(e) => setBalance({ ...balance, inward_qty: e.target.value })} className="input" /></div>
+            <div><label className="block text-slate-500 text-xs mb-1">Opening Stock</label>
+              <input type="number" min="0" step="any" value={balance.opening_stock ?? ''} onChange={(e) => setBalance({ ...balance, opening_stock: e.target.value })} className="input" /></div>
+            <div><label className="block text-slate-500 text-xs mb-1">MIN STOCK</label>
+              <input type="number" min="0" step="any" value={balance.min_stock ?? ''} onChange={(e) => setBalance({ ...balance, min_stock: e.target.value })} className="input" /></div>
+            <div><label className="block text-slate-500 text-xs mb-1">MAX STOCK</label>
+              <input type="number" min="0" step="any" value={balance.max_stock ?? ''} onChange={(e) => setBalance({ ...balance, max_stock: e.target.value })} className="input" /></div>
+          </div>
+          {balance.schedule_qty !== '' && balance.schedule_qty != null && (
+            <div className="text-xs text-slate-500 mt-3">
+              Balance preview: <span className="font-semibold text-slate-700">{fmtNum((Number(balance.schedule_qty) || 0) - (Number(balance.inward_qty) || 0))}</span>
+              {' · '}Inward %: <span className="font-semibold text-slate-700">{fmtNum((Number(balance.schedule_qty) ? ((Number(balance.inward_qty) || 0) / Number(balance.schedule_qty)) * 100 : 0))}%</span>
+            </div>
+          )}
+        </Modal>
+      )}
+
+      {/* View detail */}
+      {modal === 'view' && view && (
+        <Modal open title={view.model || 'Raw Material'} subtitle={view.item_code ? `Item Code: ${view.item_code}` : ''} onClose={() => setModal(null)}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+            <div>
+              <div className="text-[0.6875rem] font-semibold uppercase tracking-wide text-slate-400 mb-1">Master</div>
+              {detailRow('Material Name', view.model)}
+              {detailRow('Item Code', view.item_code, true)}
+              {detailRow('Description', view.name)}
+              {detailRow('Category', (view.category || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()))}
+              {detailRow('UOM', view.uom)}
+              {detailRow('MIN Stock Level', view.min_stock_level != null ? fmtNum(view.min_stock_level) : '—', true)}
+              {detailRow('Source Type', view.source_type || '—')}
+              {detailRow('Family', view.family)}
+              {detailRow('Active', view.is_active ? 'Yes' : 'No')}
+              {detailRow('Created', view.created_at ? new Date(view.created_at).toLocaleString() : '—')}
+            </div>
+            <div>
+              <div className="text-[0.6875rem] font-semibold uppercase tracking-wide text-slate-400 mb-1 mt-4 sm:mt-0">Position</div>
+              {detailRow('Schedule Qty', fmtNum(view.balance?.schedule_qty), true)}
+              {detailRow('Inward Qty', fmtNum(view.balance?.inward_qty), true)}
+              {detailRow('Balance', fmtNum(view.balance?.balance_qty), true)}
+              {detailRow('Inward %', view.balance?.completion_pct != null ? `${fmtNum(view.balance.completion_pct * 100)}%` : '—')}
+              {detailRow('Opening Stock', fmtNum(view.balance?.opening_stock), true)}
+              {detailRow('Current Stock', fmtNum(view.current_stock), true)}
+              {detailRow('MIN STOCK', view.balance?.min_stock != null ? fmtNum(view.balance.min_stock) : '—', true)}
+              {detailRow('MAX STOCK', view.balance?.max_stock != null ? fmtNum(view.balance.max_stock) : '—', true)}
+              {(() => { const s = stockStatus(view); return detailRow('Status', s.label) })()}
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }

@@ -1,22 +1,33 @@
-"""Raw material management (read + CRUD on balances).
+"""Raw material management: master-data CRUD + balance tracking.
 
-Balance = Schedule - Inward and Inward % are always recomputed server-side on
-every update so the UI never stores stale calculated values. MIN/MAX stock are
-persisted on the RawMaterialBalance row and drive the existing Alerts centre
-(via services.reorder_alerts). Current stock stays sourced from Inventory /
-stock movements — this module never writes a competing stock figure.
+Master data is the existing Product model (category=raw_material) so
+user-created raw materials immediately become available to every module that
+selects materials (BOM, Purchase, Production, Inventory, Material
+Requirements, Stock Movements …). Balance = Schedule - Inward and Inward % are
+always recomputed server-side so the UI never stores stale calculated values.
+MIN/MAX stock drive the existing Alerts centre. Current stock stays sourced
+from Inventory / stock movements — this module never writes a competing figure.
+
+Delete safety: a raw material that is referenced by business records (BOM,
+purchase, inventory, production, stock movements, requirements, …) is NEVER
+cascade-deleted; the delete is rejected with a clear message.
 """
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..auth import CurrentUser, ManagerOrAdmin
-from ..crud import get_or_404, write_audit
+from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
-from ..models import Inventory, Product, ProductCategory, RawMaterialBalance
-from ..schemas import ProductOut, RawMaterialBalanceOut
+from ..models import (
+    BillOfMaterial, BOM, CustomerDispatchLine, DispatchLine, Inventory, Plan,
+    Product, ProductAlias, ProductCategory, ProductionOrder, PurchaseOrderLine,
+    PurchaseRequirement, RawMaterialBalance, SalesOrderLine, StockMovement,
+    StockTransferLine,
+)
+from ..schemas import ProductCreate, ProductOut, ProductUpdate, RawMaterialBalanceOut
 from ..services.reorder_alerts import refresh_reorder_alert
 
 router = APIRouter(prefix="/raw-materials", tags=["raw-materials"])
@@ -43,6 +54,149 @@ def _validate_numeric(label: str, value: float | None) -> None:
     if value is not None and value < 0:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             f"{label} cannot be negative")
+
+
+def _referenced_by(db: Session, product_id: int) -> list[str]:
+    """Return the modules whose records reference this product.
+
+    A referenced raw material must never be cascade-deleted; the caller
+    rejects the delete with the returned list so the user sees exactly where
+    the material is used.
+    """
+    checks = [
+        ("BOM", BOM, BOM.product_id),
+        ("Purchase", PurchaseOrderLine, PurchaseOrderLine.product_id),
+        ("Inventory / Stock", Inventory, Inventory.product_id),
+        ("Stock Movements", StockMovement, StockMovement.product_id),
+        ("Stock Transfers", StockTransferLine, StockTransferLine.product_id),
+        ("Customer Dispatches", CustomerDispatchLine, CustomerDispatchLine.product_id),
+        ("Production", ProductionOrder, ProductionOrder.product_id),
+        ("Sales Orders", SalesOrderLine, SalesOrderLine.product_id),
+        ("Dispatch", DispatchLine, DispatchLine.product_id),
+        ("Plans", Plan, Plan.product_id),
+        ("Material Requirements", PurchaseRequirement, PurchaseRequirement.product_id),
+        ("Raw Material Balances", RawMaterialBalance, RawMaterialBalance.product_id),
+        ("Product Aliases", ProductAlias, ProductAlias.product_id),
+    ]
+    refs = []
+    for label, model, column in checks:
+        if db.scalar(select(func.count()).select_from(model).where(column == product_id)):
+            refs.append(label)
+    if db.scalar(select(func.count()).select_from(BillOfMaterial).where(
+            or_(BillOfMaterial.product_id == product_id,
+                BillOfMaterial.raw_material_product_id == product_id))):
+        if "BOM" not in refs:
+            refs.append("BOM")
+    return refs
+
+
+@router.post("", response_model=ProductOut, status_code=status.HTTP_201_CREATED)
+def create_raw_material(body: ProductCreate, db: Annotated[Session, Depends(get_db)],
+                        user: ManagerOrAdmin):
+    model_name = (body.model or "").strip()
+    if not model_name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Material name is required")
+    dup = db.scalar(select(Product.id).where(
+        func.lower(Product.model) == model_name.lower()).limit(1))
+    if dup:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f"Raw material '{model_name}' already exists. Duplicate records are not created.")
+    data = body.model_dump()
+    data["model"] = model_name
+    data["category"] = ProductCategory.raw_material
+    p = Product(**data)
+    db.add(p)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "Could not create raw material (item code / model already in use).")
+    db.refresh(p)
+    write_audit(db, user, "CREATE", "products", p.id, f"Created raw material {p.model}")
+    return p
+
+
+def _serialize_detail(db: Session, p: Product) -> dict:
+    """Full detail for the View action (product master + latest balance keys)."""
+    b = db.scalars(
+        select(RawMaterialBalance).where(RawMaterialBalance.product_id == p.id)
+        .order_by(RawMaterialBalance.report_date.desc()).limit(1)
+    ).first()
+    inv = db.scalars(select(Inventory).where(Inventory.product_id == p.id,
+                                             Inventory.plant_id.is_(None))).first()
+    return {
+        **ProductOut.model_validate(p).model_dump(),
+        "source_type": p.source_type.value if p.source_type else None,
+        "family": p.family,
+        "balance": RawMaterialBalanceOut.model_validate(b).model_dump() if b else None,
+        "current_stock": inv.current_stock if inv else 0,
+    }
+
+
+@router.get("/{product_id}", response_model=dict)
+def get_raw_material(product_id: int, db: Annotated[Session, Depends(get_db)],
+                     _: CurrentUser):
+    p = get_or_404(db, Product, product_id)
+    if p.category != ProductCategory.raw_material:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Raw material not found")
+    return _serialize_detail(db, p)
+
+
+@router.patch("/{product_id}", response_model=ProductOut)
+def update_raw_material(product_id: int, body: ProductUpdate,
+                        db: Annotated[Session, Depends(get_db)],
+                        user: ManagerOrAdmin):
+    p = get_or_404(db, Product, product_id)
+    if p.category != ProductCategory.raw_material:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Raw material not found")
+    if body.model is not None:
+        new_model = (body.model or "").strip()
+        if not new_model:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Material name is required")
+        dup = db.scalar(select(Product.id).where(
+            func.lower(Product.model) == new_model.lower(),
+            Product.id != product_id).limit(1))
+        if dup:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                f"Another record already uses material name '{new_model}'.")
+        p.model = new_model
+    # Category stays raw_material (excluded from generic update).
+    apply_updates(p, body, exclude={"model", "category"})
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "Could not update raw material (item code / model already in use).")
+    db.refresh(p)
+    write_audit(db, user, "UPDATE", "products", p.id, f"Updated raw material {p.model}")
+    return p
+
+
+@router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_raw_material(product_id: int, db: Annotated[Session, Depends(get_db)],
+                        user: ManagerOrAdmin):
+    p = get_or_404(db, Product, product_id)
+    if p.category != ProductCategory.raw_material:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Raw material not found")
+    refs = _referenced_by(db, product_id)
+    if refs:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Cannot delete raw material '{p.model}': it is referenced in "
+            f"{', '.join(refs)}. Remove/reassign those records first, or edit it "
+            "instead.")
+    try:
+        db.delete(p)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "Cannot delete raw material: it is referenced by other records.")
+    write_audit(db, user, "DELETE", "products", product_id, f"Deleted raw material {p.model}")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("", response_model=dict)

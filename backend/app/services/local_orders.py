@@ -94,6 +94,34 @@ def dispatched_map(db: Session, o: SalesOrder) -> tuple[dict[int, float], float]
     return per_line, total
 
 
+def order_line_remaining(db: Session, order_line_id: int | None,
+                         exclude_dispatch_id: int | None = None,
+                         exclude_line_id: int | None = None) -> float | None:
+    """Remaining quantity still left to dispatch on an order line — exactly the
+    \"Balance\" of Schedule (order line qty) minus every date-wise Dispatch
+    entry already recorded against it.
+
+    Negative when the line was historically over-dispatched (legacy data);
+    None when the line does not exist / is not stock-attributed (dispatch
+    entries without a sales_order_line_id are not balance-constrained).
+    `exclude_*` let an in-progress edit discount its own entry.
+    """
+    if order_line_id is None:
+        return None
+    qty = db.scalar(select(SalesOrderLine.quantity)
+                    .where(SalesOrderLine.id == order_line_id))
+    if qty is None:
+        return None
+    stmt = (select(func.coalesce(func.sum(DispatchLine.quantity), 0))
+            .where(DispatchLine.sales_order_line_id == order_line_id))
+    if exclude_dispatch_id is not None:
+        stmt = stmt.where(DispatchLine.dispatch_id != exclude_dispatch_id)
+    if exclude_line_id is not None:
+        stmt = stmt.where(DispatchLine.id != exclude_line_id)
+    dispatched = db.scalar(stmt) or 0
+    return float(qty) - float(dispatched)
+
+
 def check_ready(db: Session, o: SalesOrder) -> dict:
     """Per-line stock check at the Dispatch location.
 
@@ -241,6 +269,8 @@ def serialize_local_order(db: Session, o: SalesOrder) -> dict:
     return {
         "id": o.id,
         "order_no": o.order_no,
+        "so_no": o.so_no or "",
+        "customer_po_no": o.customer_po_no or "",
         "customer_id": o.customer_id,
         "customer": customer.name if customer else (o.customer_name or None),
         "customer_name": o.customer_name or (customer.name if customer else ""),

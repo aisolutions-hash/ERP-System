@@ -10,16 +10,17 @@ from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
 from ..models import (
     Customer, Dispatch, DispatchLine, DispatchStatus, MovementType,
-    OrderStatus, OrderType, Plant, Product, ProductionOrder, ProductionStatus,
-    SalesOrder, SalesOrderLine, StockMovement,
+    OrderStatus, OrderType, Plan, PlanType, Plant, Product, ProductionOrder,
+    ProductionStatus, SalesOrder, SalesOrderLine, StockMovement,
 )
 from ..schemas import DispatchCreate, DispatchLineIn, DispatchUpdate
 from ..services.business import sync_purchase_shortages
 from ..services.customers import get_or_create_customer
+from ..services.local_orders import order_line_remaining
 from ..services.reorder_alerts import refresh_reorder_alert
 from ..services.stock_service import (
-    apply_movement, reconvert_document, resolve_or_create_product,
-    reverse_and_remove_ref,
+    apply_movement, ensure_available_stock, reconvert_document,
+    resolve_or_create_product, reverse_and_remove_ref,
 )
 from datetime import date
 
@@ -216,13 +217,20 @@ def _stocked(db: Session, dispatch_id: int) -> bool:
 
 
 def _resolve_line_product(db: Session, ln) -> Product | None:
-    """Resolve a dispatch line's product: linked id, or a manual item with an
-    Item Code (lazily created through the shared manual-product resolver)."""
+    """Resolve a dispatch line's product: linked id, or a manual item lazily
+    created through the shared manual-product resolver.
+
+    Product ID is the tracking identity; Item Code stays optional. A manual
+    line with an Item Code matches/creates a Product keyed on (item_code,
+    model); a blank Item Code with a description gets its own fresh Product
+    (never merged by description) so stock is always tracked. Returns None
+    only when there is genuinely nothing to identify (no linked product,
+    blank Item Code and blank description).
+    """
     if ln.product_id:
         return get_or_404(db, Product, ln.product_id)
-    if (ln.item_code or "").strip():
-        return resolve_or_create_product(db, ln.item_code, ln.description)
-    return None
+    return resolve_or_create_product(db, ln.item_code or "", ln.description or "",
+                                     allow_blank=True)
 
 
 def _resolve_dispatch_lines(db: Session, raw_lines) -> list[DispatchLine]:
@@ -242,6 +250,51 @@ def _resolve_dispatch_lines(db: Session, raw_lines) -> list[DispatchLine]:
             rate=ln.rate, weight=ln.weight,
             sales_order_line_id=ln.sales_order_line_id))
     return rows
+
+
+def _require_available_stock(db: Session, d: Dispatch, added: list[DispatchLine]) -> None:
+    """Mandatory stock availability guard for ANY dispatched quantity (C1).
+
+    Every tracked dispatch line subtracts finished-goods stock at the
+    dispatch's own location (`d.plant_id`, NULL = Main Store), so the currently
+    available stock there is the ceiling for every NEW/added line quantity. The
+    Inventory row is locked FOR UPDATE inside the same transaction that later
+    applies the movement, so check-then-deduct is atomic: a rejected request
+    leaves NO partial database write and a concurrent dispatch cannot observe a
+    stale balance. This applies to Standard / Manufacture / Trading AND Local
+    order dispatches (Local Orders simply draw from the Dispatch location).
+
+    The existing Local Order BALANCE guard is preserved unchanged: never
+    dispatch more than the remaining quantity on the linked order line.
+    """
+    plant_id = d.plant_id
+    totals: dict[int, float] = {}
+    for ln in added:
+        if ln.product_id is not None and float(ln.quantity or 0) > 0:
+            totals[ln.product_id] = totals.get(ln.product_id, 0.0) + float(ln.quantity or 0)
+    for pid in sorted(totals):
+        ensure_available_stock(db, pid, plant_id, totals[pid],
+                               context=f"dispatch {d.dispatch_no or 'stock out'}")
+    # Balance guard (LOCAL orders only, unchanged rule).
+    if not d.sales_order_id:
+        return
+    o = db.get(SalesOrder, d.sales_order_id)
+    if o is None or o.order_type != OrderType.local:
+        return
+    remaining_totals: dict[int, float] = {}
+    for ln in added:
+        if ln.sales_order_line_id is not None and float(ln.quantity or 0) > 0:
+            remaining_totals[ln.sales_order_line_id] = remaining_totals.get(ln.sales_order_line_id, 0.0) + float(ln.quantity or 0)
+    for rid, qty in remaining_totals.items():
+        remaining = order_line_remaining(db, rid)
+        if remaining is None:
+            continue
+        if qty > remaining:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(f"Cannot dispatch more than the remaining {remaining:g} on this order line "
+                        f"(trying to dispatch {qty:g})."),
+            )
 
 
 def _dispatch_entries(d: Dispatch) -> list[tuple]:
@@ -334,6 +387,9 @@ def create_dispatch(body: DispatchCreate, db: Annotated[Session, Depends(get_db)
     )
     d.dispatched_qty = sum(float(l.quantity or 0) for l in d.lines)
     _recalc_status(d)
+    # Mandatory Local Order guard: never dispatch more than CURRENTLY available
+    # at the Dispatch location (checked before any stock effect is applied).
+    _require_available_stock(db, d, list(d.lines))
     db.add(d)
     db.flush()
     # Lines provided at creation are actual date-wise dispatch entries: apply stock.
@@ -360,12 +416,16 @@ def add_dispatch_line(dispatch_id: int, body: DispatchLineIn,
         if dp is not None:
             d.plant_id = dp.id
     product = _resolve_line_product(db, body)
-    db.add(DispatchLine(dispatch_id=d.id, product_id=product.id if product else None,
-                        description=(body.description or "").strip(),
-                        quantity=body.quantity,
-                        dispatch_date=body.dispatch_date or date.today(),
-                        rate=body.rate, weight=body.weight,
-                        sales_order_line_id=body.sales_order_line_id))
+    new_line = DispatchLine(dispatch_id=d.id, product_id=product.id if product else None,
+                            description=(body.description or "").strip(),
+                            quantity=body.quantity,
+                            dispatch_date=body.dispatch_date or date.today(),
+                            rate=body.rate, weight=body.weight,
+                            sales_order_line_id=body.sales_order_line_id)
+    # Mandatory Local Order guard: the additional quantity must be <= the stock
+    # currently available at the Dispatch location.
+    _require_available_stock(db, d, [new_line])
+    db.add(new_line)
     db.flush()
     db.expire(d, ["lines"])
     d.dispatched_qty = sum(float(l.quantity or 0) for l in d.lines)
@@ -392,6 +452,12 @@ def update_dispatch_line(line_id: int, body: DispatchLineIn,
     ln = get_or_404(db, DispatchLine, line_id)
     d = get_or_404(db, Dispatch, ln.dispatch_id)
     old_qty = float(ln.quantity or 0)
+    # Snapshot the OLD per-product quantities BEFORE mutating, so the net stock
+    # effect of this edit can be validated against currently available stock.
+    old_per_product: dict[int, float] = {}
+    for l in d.lines:
+        if l.product_id is not None:
+            old_per_product[l.product_id] = old_per_product.get(l.product_id, 0.0) + float(l.quantity or 0)
     new_qty = float(body.quantity)
     ln.quantity = new_qty
     ln.dispatch_date = body.dispatch_date or ln.dispatch_date
@@ -400,6 +466,32 @@ def update_dispatch_line(line_id: int, body: DispatchLineIn,
     product = _resolve_line_product(db, body)
     if product is not None:
         ln.product_id = product.id
+    # Net-delta availability guard (C1): reconvert reverses the whole dispatch
+    # then re-applies it, so only the NET additional consumption per product at
+    # this location must be covered by stock currently available. Applies to
+    # every order type (locked FOR UPDATE in the same transaction).
+    new_per_product: dict[int, float] = {}
+    for l in d.lines:
+        if l.product_id is not None:
+            new_per_product[l.product_id] = new_per_product.get(l.product_id, 0.0) + float(l.quantity or 0)
+    for pid in sorted(new_per_product):
+        net_delta = new_per_product[pid] - old_per_product.get(pid, 0.0)
+        if net_delta > 0:
+            ensure_available_stock(db, pid, d.plant_id, net_delta,
+                                   context=f"dispatch {d.dispatch_no or 'stock out'}")
+    # Balance guard on edit (LOCAL orders only, unchanged rule): the edited
+    # entry (with its own old qty excluded) plus everything else on the order
+    # line must still be within the remaining schedule.
+    if d.sales_order_id:
+        o = db.get(SalesOrder, d.sales_order_id)
+        if o is not None and o.order_type == OrderType.local and ln.sales_order_line_id is not None:
+            remaining = order_line_remaining(db, ln.sales_order_line_id, exclude_line_id=ln.id)
+            if remaining is not None and new_qty > remaining:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(f"Cannot dispatch more than the remaining {remaining:g} on this order line "
+                            f"(trying to dispatch {new_qty:g})."),
+                )
     d.dispatched_qty = sum(float(l.quantity or 0) for l in d.lines)
     _recalc_status(d)
     _sync_dispatch_stock(db, d)
@@ -594,38 +686,67 @@ def completed_production_for_dispatch(
 ):
     """Completed production records available for dispatch.
 
-    Returns production orders with status=Completed, including product,
-    customer (if linked), PO (if linked), produced qty, and dates.
+    Returns production orders and production plans with status=Completed,
+    including product, customer (if linked), PO (if linked), produced qty, and
+    dates. A record whose produced qty has already been fully dispatched
+    (available = produced - dispatched <= 0) is not offered for dispatch again.
     Most recent completions first.
     """
-    stmt = (
-        select(ProductionOrder)
-        .where(ProductionOrder.status == ProductionStatus.completed)
-    )
+    items = []
+
+    # --- Completed production ORDERS (status set via daily output movements) ---
+    from_date = to_date = None
     if date_from:
         try:
             from_date = date.fromisoformat(date_from)
         except ValueError:
             from_date = None
-        if from_date:
-            stmt = stmt.where(ProductionOrder.completion_date >= from_date)
     if date_to:
         try:
             to_date = date.fromisoformat(date_to)
         except ValueError:
             to_date = None
-        if to_date:
-            stmt = stmt.where(ProductionOrder.completion_date <= to_date)
-    stmt = stmt.order_by(
+
+    # --- Finished-goods pool per PRODUCT (C5) --------------------------------
+    # Produced = SUM(production_output movements) per product (the only
+    # movements that actually add finished goods to stock), dispatched = all
+    # DISPATCH movements. Available for dispatch is then the product-level pool
+    # max(0, produced - dispatched). This is exact — one pool per product, no
+    # per-order/per-plan double counting — so the availability always equals the
+    # real available finished-goods stock for that product. Records whose pool is
+    # exhausted (produced - dispatched <= 0) are not offered again.
+    produced_by_product = dict(db.execute(
+        select(
+            StockMovement.product_id,
+            func.coalesce(func.sum(StockMovement.quantity), 0),
+        )
+        .where(StockMovement.movement_type == MovementType.production_output)
+        .group_by(StockMovement.product_id)
+    ).all())
+    dispatched_by_product = dict(db.execute(
+        select(
+            StockMovement.product_id,
+            func.coalesce(func.sum(StockMovement.quantity), 0),
+        )
+        .where(StockMovement.movement_type == MovementType.dispatch)
+        .group_by(StockMovement.product_id)
+    ).all())
+
+    stmt = (
+        select(ProductionOrder)
+        .where(ProductionOrder.status == ProductionStatus.completed)
+    )
+    if from_date:
+        stmt = stmt.where(ProductionOrder.completion_date >= from_date)
+    if to_date:
+        stmt = stmt.where(ProductionOrder.completion_date <= to_date)
+    orders = db.scalars(stmt.order_by(
         ProductionOrder.completion_date.desc().nullslast(),
         ProductionOrder.report_date.desc(),
         ProductionOrder.id.desc(),
-    )
-    total = db.scalar(select(func.count()).select_from(stmt.subquery()))
-    rows = db.scalars(stmt.offset((page - 1) * page_size).limit(page_size)).all()
+    )).all()
 
-    items = []
-    for po in rows:
+    for po in orders:
         p = po.product
         customer = None
         if po.customer_id:
@@ -647,14 +768,13 @@ def completed_production_for_dispatch(
                     )
                     po_no = sol or ""
 
-        # Available qty = produced - dispatched (from inventory or dispatch records)
-        dispatched_for_order = 0.0
-        if po.sales_order_id:
-            dispatched_for_order = float(db.scalar(
-                select(func.coalesce(func.sum(Dispatch.dispatched_qty), 0))
-                .where(Dispatch.sales_order_id == po.sales_order_id)
-            ) or 0)
-        available_qty = float(po.produced_qty or 0) - dispatched_for_order
+        # Available qty = finished-goods pool for this product (produced
+        # production_output movements - dispatch movements).
+        produced_total = float(produced_by_product.get(po.product_id, 0.0) or 0)
+        dispatched_total = float(dispatched_by_product.get(po.product_id, 0.0) or 0)
+        available_qty = produced_total - dispatched_total
+        if available_qty <= 0:
+            continue
 
         items.append({
             "id": po.id,
@@ -675,7 +795,67 @@ def completed_production_for_dispatch(
             "remarks": po.remarks,
         })
 
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    # --- Completed production PLANS (finished goods posted to Main Store) ---
+    plan_stmt = (
+        select(Plan)
+        .where(Plan.plan_type == PlanType.production)
+        .where(func.upper(func.trim(Plan.status)) == "COMPLETED")
+        .where(Plan.product_id.isnot(None))
+        .where(Plan.quantity > 0)
+    )
+    if from_date:
+        plan_stmt = plan_stmt.where(Plan.plan_date >= from_date)
+    if to_date:
+        plan_stmt = plan_stmt.where(Plan.plan_date <= to_date)
+    plans = db.scalars(plan_stmt.order_by(
+        Plan.plan_date.desc(),
+        Plan.id.desc(),
+    )).all()
+
+    # Already-dispatched finished goods per product are pooled above (C5);
+    # plans draw from the SAME product-level pool, so a dispatch is never
+    # double-counted against the plan and the producing order together.
+    for pl in plans:
+        p = pl.product
+        customer = None
+        if pl.customer_id:
+            c = db.get(Customer, pl.customer_id)
+            customer = {"id": c.id, "name": c.name} if c else None
+        produced = float(pl.quantity or 0)
+        dispatched = float(dispatched_by_product.get(pl.product_id, 0.0) or 0)
+        available_qty = float(produced_by_product.get(pl.product_id, 0.0) or 0) - dispatched
+        if available_qty <= 0:
+            continue
+
+        items.append({
+            "id": pl.id,
+            "order_no": f"PLAN-{pl.id}",
+            "product_id": pl.product_id,
+            "model": p.model if p else pl.model,
+            "item_code": p.item_code if p else None,
+            "description": p.name if p else None,
+            "customer": customer,
+            "customer_id": pl.customer_id,
+            "po_no": "",
+            "schedule_qty": pl.quantity,
+            "produced_qty": pl.quantity,
+            "completion_date": pl.plan_date,
+            "report_date": pl.plan_date,
+            "available_qty": available_qty,
+            "status": "Completed",
+            "remarks": pl.remarks,
+        })
+
+    # Most recent completions first, then paginate over the combined list.
+    items.sort(key=lambda x: x["completion_date"] or date.min, reverse=True)
+    total = len(items)
+    start = (page - 1) * page_size
+    return {
+        "items": items[start:start + page_size],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.get("/local-order-dispatch", response_model=dict)
@@ -744,12 +924,31 @@ def update_dispatch(dispatch_id: int, body: DispatchUpdate, db: Annotated[Sessio
         c = get_or_create_customer(db, body.customer_name)
         if c:
             d.customer_id = c.id
+    old_plant_id = d.plant_id
+    old_per_product: dict[int, float] = {}
+    for l in d.lines:
+        if l.product_id is not None:
+            old_per_product[l.product_id] = old_per_product.get(l.product_id, 0.0) + float(l.quantity or 0)
     apply_updates(d, body, exclude={"lines", "customer_name"})
     if body.lines is not None:
         db.query(DispatchLine).filter(DispatchLine.dispatch_id == d.id).delete()
         d.lines = _resolve_dispatch_lines(db, body.lines)
     d.dispatched_qty = sum(float(l.quantity or 0) for l in d.lines)
     _recalc_status(d)
+    # Net-delta availability guard (C1): reconvert reverses the whole dispatch
+    # then re-applies it; only the NET additional OUT per product at the (new)
+    # location must be covered. A location change restores the old location and
+    # the new location must cover the full new quantity.
+    new_per_product: dict[int, float] = {}
+    for l in d.lines:
+        if l.product_id is not None:
+            new_per_product[l.product_id] = new_per_product.get(l.product_id, 0.0) + float(l.quantity or 0)
+    plant_changed = old_plant_id != d.plant_id
+    for pid in sorted(new_per_product):
+        need = new_per_product[pid] if plant_changed else (new_per_product[pid] - old_per_product.get(pid, 0.0))
+        if need > 0:
+            ensure_available_stock(db, pid, d.plant_id, need,
+                                   context=f"dispatch {d.dispatch_no or 'stock out'}")
     _sync_dispatch_stock(db, d)
     db.commit()
     db.refresh(d)

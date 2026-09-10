@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   Plus, Search, Download, Eye, Pencil, Trash2, RefreshCw,
-  Package, CheckCircle2, AlertTriangle, ArrowLeftRight, Truck, History, Warehouse,
+  Package, PackagePlus, CheckCircle2, AlertTriangle, ArrowLeftRight, Truck, History, Warehouse,
 } from 'lucide-react'
 import api, { downloadFile } from '../lib/api'
 import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard, SearchSelect, PageTabs } from '../components/ui'
@@ -56,6 +56,11 @@ export default function Inventory() {
   const [showDispatchForm, setShowDispatchForm] = useState(false)
   const [dispatch, setDispatch] = useState(null)
 
+  // ---- stock add / edit modal ----
+  const [showStockModal, setShowStockModal] = useState(false)
+  const [stockForm, setStockForm] = useState(null)
+  const [stockDetail, setStockDetail] = useState(null)
+
   const loadStock = () => {
     setLoading(true)
     api.get('/inventory', { params: { search, category, status, plant_id: plantId || undefined } })
@@ -71,6 +76,73 @@ export default function Inventory() {
         ;(r.data.items || []).forEach((i) => { idx[`${i.product_id}:${i.plant_id ?? ''}`] = Number(i.current_stock) || 0 })
         setInvIndex(idx)
       }).catch(() => {})
+  }
+
+  const afterStockMutated = () => {
+    loadStock(); loadInvIndex(); refreshCounts()
+  }
+
+  const openNewStock = () => {
+    setStockForm({
+      id: null, product_id: '', description: '', item_code: '',
+      quantity: '', unit: '', plant_id: '', transaction_date: today(),
+      remarks: '', min_level: '',
+    })
+    setError(null); setShowStockModal(true)
+  }
+
+  const openEditStock = (row) => {
+    setStockForm({
+      id: row.id, product_id: row.product_id ?? '', description: row.product?.name || '',
+      item_code: row.product?.item_code || '', quantity: String(row.current_stock ?? ''),
+      unit: row.product?.uom || '', plant_id: row.plant_id ?? '',
+      transaction_date: today(), remarks: '', min_level: row.min_level != null ? String(row.min_level) : '',
+      hadMin: row.min_level != null,
+    })
+    setError(null); setShowStockModal(true)
+  }
+
+  const saveStock = async () => {
+    if (stockForm.id == null) {
+      const payload = {
+        product_id: stockForm.product_id ? Number(stockForm.product_id) : null,
+        item_code: stockForm.item_code || '',
+        description: stockForm.description || '',
+        quantity: Number(stockForm.quantity || 0),
+        unit: stockForm.unit || undefined,
+        plant_id: stockForm.plant_id !== '' ? Number(stockForm.plant_id) : null,
+        transaction_date: stockForm.transaction_date || today(),
+        remarks: stockForm.remarks || '',
+        min_level: stockForm.min_level !== '' ? Number(stockForm.min_level) : undefined,
+      }
+      if (!payload.product_id && !payload.item_code && !payload.description) { setError('Select a product, or type an item code/description'); return }
+      if (!(payload.quantity > 0)) { setError('Quantity must be greater than 0'); return }
+      try {
+        await api.post('/inventory/add-stock', payload)
+        setShowStockModal(false); setStockForm(null); setError(null); afterStockMutated()
+      } catch (e) { setError(e.response?.data?.detail || 'Add stock failed') }
+    } else {
+      const payload = {
+        quantity: stockForm.quantity !== '' ? Number(stockForm.quantity) : undefined,
+        min_level: stockForm.min_level !== '' ? Number(stockForm.min_level) : (stockForm.hadMin ? null : undefined),
+        unit: stockForm.unit || undefined,
+        item_code: stockForm.item_code || undefined,
+        description: stockForm.description || undefined,
+        plant_id: stockForm.plant_id !== '' ? Number(stockForm.plant_id) : undefined,
+        product_id: stockForm.product_id ? Number(stockForm.product_id) : undefined,
+        remarks: stockForm.remarks || undefined,
+      }
+      try {
+        await api.patch(`/inventory/${stockForm.id}`, payload)
+        setShowStockModal(false); setStockForm(null); setError(null); afterStockMutated()
+      } catch (e) { setError(e.response?.data?.detail || 'Update failed') }
+    }
+  }
+
+  const delStock = async (row) => {
+    if (!confirm(`Delete inventory line for ${row.product?.model || row.product_id} at ${row.plant?.name || 'Main Store'}? This is only allowed when the line is empty and unreferenced.`)) return
+    try { await api.delete(`/inventory/${row.id}`); afterStockMutated() }
+    catch (e) { alert('Delete failed: ' + (e.response?.data?.detail || e.message)) }
   }
 
   const loadTransfers = () => {
@@ -143,6 +215,16 @@ export default function Inventory() {
     { key: 'current', label: 'Current Stock', render: (r) => <span className="font-semibold">{fmtNum(r.current_stock)}</span> },
     { key: 'min', label: 'Min Level', render: (r) => r.min_level != null ? fmtNum(r.min_level) : '—' },
     { key: 'status', label: 'Status', render: (r) => <Badge className={statusCls[r.status]}>{r.status.replace('_', ' ')}</Badge> },
+    {
+      key: 'actions', label: '',
+      render: (r) => (
+        <div className="flex items-center gap-1.5">
+          <button onClick={() => setStockDetail(r)} className="btn btn-ghost p-1.5" title="View"><Eye size={15} /></button>
+          <button onClick={() => openEditStock(r)} className="btn btn-ghost p-1.5" title="Edit"><Pencil size={15} /></button>
+          <button onClick={() => delStock(r)} className="btn btn-ghost p-1.5 text-red-400" title="Delete"><Trash2 size={15} /></button>
+        </div>
+      ),
+    },
   ]
 
   // ---- transfer helpers ----
@@ -311,6 +393,7 @@ export default function Inventory() {
         actions={
           <>
             {tab === 'stock' && <button onClick={() => downloadFile('/reports/inventory/csv', 'inventory.csv')} className="btn btn-secondary"><Download size={15} /> CSV</button>}
+            {tab === 'stock' && <button onClick={openNewStock} className="btn btn-primary"><PackagePlus size={15} /> Add Stock</button>}
             {tab === 'transfers' && <button onClick={loadTransfers} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>}
             <button onClick={openNewTransfer} className="btn btn-secondary"><ArrowLeftRight size={15} /> Transfer Stock</button>
             <button onClick={openNewDispatch} className="btn btn-primary"><Truck size={15} /> New Dispatch</button>
@@ -483,6 +566,77 @@ export default function Inventory() {
             })}
           </div>
           <button onClick={() => setDispatch({ ...dispatch, lines: [...dispatch.lines, blankLine()] })} className="btn btn-ghost mt-2 text-xs"><Plus size={12} className="inline mr-1" />Add line</button>
+        </Modal>
+      )}
+
+      {stockDetail && (
+        <Modal open title={`Stock — ${stockDetail.product?.model || 'Unknown'}`} onClose={() => setStockDetail(null)} wide
+          footer={<>
+            <button onClick={() => setStockDetail(null)} className="btn btn-secondary">Close</button>
+            <button onClick={() => { const row = stockDetail; setStockDetail(null); openEditStock(row) }} className="btn btn-primary"><Pencil size={14} /> Edit</button>
+          </>}>
+          <div className="grid grid-cols-2 gap-4 mb-4 text-sm">
+            <div><span className="text-slate-500">Product:</span> <span className="font-medium">{stockDetail.product?.model}</span></div>
+            <div><span className="text-slate-500">Item Code:</span> <span className="font-mono">{stockDetail.product?.item_code || '—'}</span></div>
+            <div><span className="text-slate-500">Category:</span> <span className="capitalize">{stockDetail.product?.category?.replace(/_/g, ' ')}</span></div>
+            <div><span className="text-slate-500">Unit:</span> {stockDetail.product?.uom || '—'}</div>
+            <div><span className="text-slate-500">Location:</span> {stockDetail.plant?.name || 'Main Store'}</div>
+            <div><span className="text-slate-500">Status:</span> <Badge className={statusCls[stockDetail.status]}>{stockDetail.status.replace('_', ' ')}</Badge></div>
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm mb-2">
+            <div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-slate-400">Opening</div><div className="font-semibold">{fmtNum(stockDetail.opening_stock)}</div></div>
+            <div className="rounded-lg bg-green-50 px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-green-600">Received</div><div className="font-semibold text-green-700">{fmtNum(stockDetail.received_qty)}</div></div>
+            <div className="rounded-lg bg-red-50 px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-red-600">Issued</div><div className="font-semibold text-red-700">{fmtNum(stockDetail.issued_qty)}</div></div>
+            <div className="rounded-lg bg-amber-50 px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-amber-600">Current Stock</div><div className="font-semibold text-amber-700">{fmtNum(stockDetail.current_stock)}</div></div>
+          </div>
+          <div className="text-xs text-slate-500">Min. Level: {stockDetail.min_level != null ? fmtNum(stockDetail.min_level) : '—'}</div>
+        </Modal>
+      )}
+
+      {showStockModal && stockForm && (
+        <Modal open title={stockForm.id ? `Edit Stock — ${stockForm.description || stockForm.item_code || 'inventory line'}` : 'Add Physical Stock'} onClose={() => setShowStockModal(false)} wide
+          footer={<>
+            <button onClick={() => setShowStockModal(false)} className="btn btn-secondary">Cancel</button>
+            <button onClick={saveStock} className="btn btn-primary">{stockForm.id ? 'Save Changes' : 'Add Stock'}</button>
+          </>}>
+          {error && <div className="mb-3 text-sm state-box bg-red-50 text-red-700 border border-red-200">{error}</div>}
+          {!stockForm.id && (
+            <div className="mb-3 text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
+              Item Code is optional — physical stock is tracked by Product. A new description without a Product creates a fresh Product automatically.
+            </div>
+          )}
+          {stockForm.id && (
+            <div className="mb-3 text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
+              Quantity is reconciled (500 → 700 becomes 700, never 1200). Item Code / Unit / Min Level update the same Product. Changing Product or Location is blocked unless the line is empty — use Transfer Stock to move stock between locations.
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3 text-sm mb-3">
+            <div className="col-span-2"><label className="block text-slate-500 text-xs mb-1">Product / Item {!stockForm.id && <span className="text-slate-400">(optional for manual)</span>}</label>
+              <SearchSelect
+                options={products.map((p) => ({ id: p.id, label: `${p.model}${p.item_code ? ` (${p.item_code})` : ''}` }))}
+                value={stockForm.product_id || null}
+                initialLabel={!stockForm.product_id ? (stockForm.description || '') : ''}
+                placeholder="Search product or type a new item…"
+                onChange={(id, manual) => setStockForm((f) => ({ ...f, product_id: id, description: id ? f.description || (products.find((pp) => pp.id === id)?.name || '') : (manual || '') }))}
+              /></div>
+            <div><label className="block text-slate-500 text-xs mb-1">Item Code <span className="text-slate-400">(optional)</span></label>
+              <input value={stockForm.item_code ?? ''} onChange={(e) => setStockForm({ ...stockForm, item_code: e.target.value })} placeholder="e.g. RM-001" className="input" /></div>
+            <div><label className="block text-slate-500 text-xs mb-1">Unit</label>
+              <input value={stockForm.unit ?? ''} onChange={(e) => setStockForm({ ...stockForm, unit: e.target.value })} placeholder="KG" className="input" /></div>
+            <div><label className="block text-slate-500 text-xs mb-1">{stockForm.id ? 'Current Stock' : 'Quantity'} *</label>
+              <input value={stockForm.quantity ?? ''} type="number" min="0" onChange={(e) => setStockForm({ ...stockForm, quantity: e.target.value })} placeholder="0" className="input" /></div>
+            <div><label className="block text-slate-500 text-xs mb-1">Location</label>
+              <select value={stockForm.plant_id ?? ''} onChange={(e) => setStockForm({ ...stockForm, plant_id: e.target.value })} className="input">
+                <option value="">Main Store</option>
+                {locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+              </select></div>
+            <div><label className="block text-slate-500 text-xs mb-1">Date</label>
+              <input type="date" value={stockForm.transaction_date || today()} onChange={(e) => setStockForm({ ...stockForm, transaction_date: e.target.value })} className="input" /></div>
+            <div><label className="block text-slate-500 text-xs mb-1">Min. Level</label>
+              <input value={stockForm.min_level ?? ''} type="number" min="0" onChange={(e) => setStockForm({ ...stockForm, min_level: e.target.value })} placeholder="Optional" className="input" /></div>
+            <div className="col-span-2"><label className="block text-slate-500 text-xs mb-1">Remarks / Reference</label>
+              <input value={stockForm.remarks ?? ''} onChange={(e) => setStockForm({ ...stockForm, remarks: e.target.value })} placeholder="e.g. Physical GRN, Gate entry, Challan reference" className="input" /></div>
+          </div>
         </Modal>
       )}
     </div>

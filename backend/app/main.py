@@ -24,8 +24,10 @@ _COLUMN_MIGRATIONS = [
     ("raw_material_balances", "min_stock", "DOUBLE PRECISION"),
     ("raw_material_balances", "max_stock", "DOUBLE PRECISION"),
     ("sales_order_lines", "less", "DOUBLE PRECISION"),
+    ("sales_order_lines", "item_code", "VARCHAR(120) DEFAULT ''"),
     ("sales_orders", "customer_name", "VARCHAR(255)"),
     ("sales_orders", "local_order_type", "VARCHAR(20) DEFAULT 'TRADING'"),
+    ("sales_orders", "so_no", "VARCHAR(120)"),
     ("purchase_orders", "supplier_name", "VARCHAR(255)"),
     ("purchase_order_lines", "item_code", "VARCHAR(120)"),
     ("stock_transfers", "customer_name", "VARCHAR(255)"),
@@ -51,6 +53,81 @@ def _ensure_columns() -> None:
             "    completion_pct = CASE WHEN COALESCE(schedule_qty, 0) <> 0 "
             "         THEN ROUND(CAST(COALESCE(inward_qty, 0) / COALESCE(schedule_qty, 0) AS NUMERIC), 4) ELSE 0 END "
             "WHERE schedule_qty IS NOT NULL AND balance_qty IS NULL"
+        ))
+
+
+def _ensure_number_indexes() -> None:
+    """SO Number (sales_orders.order_no) and PO Number (purchase_orders.po_number)
+    are manual business-document references, not system-generated unique keys.
+    The database internal ID (primary key) remains the unique identifier. This
+    idempotent migration drops any prior UNIQUE constraint/index on those two
+    reference columns and recreates them as ordinary (non-unique) search indexes
+    so the same document number may legitimately repeat across business contexts.
+    No business data is touched and no other schema is modified."""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            DO $$
+            DECLARE r RECORD;
+            BEGIN
+                FOR r IN
+                    SELECT t.relname AS tbl, con.conname AS cname
+                    FROM pg_constraint con
+                    JOIN pg_class t ON t.oid = con.conrelid
+                    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(con.conkey)
+                    WHERE t.relname IN ('sales_orders', 'purchase_orders')
+                      AND con.contype = 'u'
+                      AND a.attname IN ('order_no', 'po_number')
+                LOOP
+                    EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', r.tbl, r.cname);
+                END LOOP;
+                FOR r IN
+                    SELECT indexname AS iname
+                    FROM pg_indexes
+                    WHERE tablename IN ('sales_orders', 'purchase_orders')
+                      AND indexdef ILIKE '%UNIQUE%'
+                      AND (indexdef ILIKE '%(order_no)%' OR indexdef ILIKE '%(po_number)%')
+                LOOP
+                    EXECUTE format('DROP INDEX IF EXISTS %I', r.iname);
+                END LOOP;
+            END $$;
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_sales_orders_order_no ON sales_orders (order_no)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_purchase_orders_po_number ON purchase_orders (po_number)"
+        ))
+
+
+def _ensure_inventory_unique() -> None:
+    """C3: guarantee ONE inventory row per (product_id, plant_id), including the
+    NULL plant (Main Store) case.
+
+    The existing uq_inventory_product_plant index covers only non-NULL
+    plant_ids (Postgres treats NULLs as distinct values), so a Main-Store row
+    could silently be duplicated. This idempotent, additive migration first
+    PRE-CHECKS the live data: if any duplicate Main-Store row already exists the
+    index is NOT created and the duplicates are logged for manual resolution
+    (never guessed / never merged). Otherwise a partial unique index enforces
+    the invariant going forward. No business data is touched."""
+    with engine.begin() as conn:
+        dups = conn.execute(text("""
+            SELECT product_id, COUNT(*) AS n
+            FROM inventory
+            WHERE plant_id IS NULL
+            GROUP BY product_id
+            HAVING COUNT(*) > 1
+            ORDER BY product_id
+        """)).fetchall()
+        if dups:
+            log.error(
+                "Inventory uniqueness NOT enforced: %d Main-Store product(s) already have "
+                "duplicate rows (product_ids: %s). Resolve them first, then re-run.",
+                len(dups), [r[0] for r in dups])
+            return
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_product_main "
+            "ON inventory (product_id) WHERE plant_id IS NULL"
         ))
 
 
@@ -114,11 +191,25 @@ def on_startup():
         log.info("Column migrations applied.")
     except Exception as exc:
         log.error("column migration failed (recoverable): %s", exc)
+    # SO/PO numbers became manual business references; drop the legacy UNIQUE
+    # indexes on them (idempotent, data untouched). Recreated as plain indexes.
+    try:
+        _ensure_number_indexes()
+        log.info("SO/PO number unique indexes released.")
+    except Exception as exc:
+        log.error("SO/PO number index migration failed (recoverable): %s", exc)
     # Internal stock locations (Dispatch, Production) — idempotent seed.
     try:
         _ensure_locations()
     except Exception as exc:
         log.error("location seed failed (recoverable): %s", exc)
+    # C3: one inventory row per (product_id, plant_id) incl. Main Store (NULL
+    # plant) — duplicate PRE-CHECKED; additive + idempotent, no data touched.
+    try:
+        _ensure_inventory_unique()
+        log.info("Inventory uniqueness for Main Store enforced.")
+    except Exception as exc:
+        log.error("inventory uniqueness migration failed (recoverable): %s", exc)
     # Reconcile purchase/production shortage requirements + alerts on boot so
     # the Alert Centre is current even for data imported or changed outside the
     # API. Dedupe-safe and non-fatal (best-effort).

@@ -41,13 +41,8 @@ export default function Purchases() {
     api.get('/products', { params: { page_size: 500 } }).then((r) => setProducts(r.data.items || [])).catch(() => {})
   }, [])
 
-  const nextPoNo = () => {
-    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    return `PO-${today}-${String(items.length + 1).padStart(3, '0')}`
-  }
-
   const openNew = () => {
-    setForm({ po_number: nextPoNo(), order_date: new Date().toISOString().slice(0, 10), status: 'Ordered', notes: '', supplier_id: '', supplier_name: '', lines: [{ product_id: '', description: '', item_code: '', quantity: '', received_qty: 0, rate: '', amount: '' }] })
+    setForm({ po_number: '', order_date: new Date().toISOString().slice(0, 10), status: 'Ordered', notes: '', supplier_id: '', supplier_name: '', lines: [{ product_id: '', description: '', item_code: '', quantity: '', received_qty: 0, rate: '', amount: '' }] })
     setError(null); setShowForm(true)
   }
 
@@ -116,12 +111,6 @@ export default function Purchases() {
     try { await api.delete(`/purchases/${po.id}`); load() } catch (e) { alert('Delete failed: ' + (e.response?.data?.detail || e.message)) }
   }
 
-  const grnDone = async (po) => {
-    const pending = (po.lines || []).reduce((s, l) => s + Math.max(0, (Number(l.quantity) || 0) - (Number(l.received_qty) || 0)), 0)
-    if (pending > 0 && !confirm(`Complete GRN for ${po.po_number}? Remaining qty ${fmtNum(pending)} will be received and added to stock.`)) return
-    try { await api.post(`/purchases/${po.id}/grn-done`); load() } catch (e) { alert('GRN failed: ' + (e.response?.data?.detail || e.message)) }
-  }
-
   const columns = [
     { key: 'po_number', label: 'PO No', render: (r) => <span className="font-mono text-xs font-medium">{r.po_number}</span> },
     { key: 'supplier', label: 'Supplier', render: (r) => <span className="font-medium">{r.supplier?.name || '—'}</span> },
@@ -133,17 +122,13 @@ export default function Purchases() {
       key: 'actions', label: '',
       render: (r) => {
         const pending = (r.lines || []).reduce((s, l) => s + Math.max(0, (Number(l.quantity) || 0) - (Number(l.received_qty) || 0)), 0)
-        const done = pending <= 0
         return (
           <div className="flex items-center gap-1.5">
             <button onClick={() => setDetail(r)} className="btn btn-ghost p-1.5" title="View"><Eye size={15} /></button>
-            {done ? (
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-green-700 bg-green-100 px-2 py-1 rounded-md" title="GRN completed"><CheckCircle2 size={13} /> GRN Done</span>
-            ) : (
-              <button onClick={() => grnDone(r)} className="inline-flex items-center gap-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-2 py-1 rounded-md" title={`GRN Done — receive remaining ${fmtNum(pending)}`}><CheckCircle2 size={13} /> GRN Done</button>
+            {pending > 0 && (
+              <button onClick={() => setShowReceive(r)} className="btn btn-ghost p-1.5 text-green-600" title="Receive"><PackageOpen size={15} /></button>
             )}
             <button onClick={() => openEdit(r)} className="btn btn-ghost p-1.5" title="Edit"><Pencil size={15} /></button>
-            <button onClick={() => setShowReceive(r)} className="btn btn-ghost p-1.5 text-green-600" title="Receive"><PackageOpen size={15} /></button>
             <button onClick={() => del(r)} className="btn btn-ghost p-1.5 text-red-400" title="Delete"><Trash2 size={15} /></button>
           </div>
         )
@@ -294,19 +279,12 @@ function ReceiveModal({ po, onClose, onDone }) {
     } catch (e) { setErr(e.response?.data?.detail || 'Receive failed') } finally { setBusy(false) }
   }
 
-  const untrackedCount = (po.lines || []).filter((l) => !l.product_id && !(l.item_code || '').trim()).length
-
   return (
     <Modal open title={`Receive Material — ${po.po_number}`} onClose={onClose} wide>
       {err && <div className="mb-3 text-sm state-box bg-red-50 text-red-700 border border-red-200">{err}</div>}
       {warning.length > 0 && (
         <div className="mb-3 text-sm state-box bg-amber-50 text-amber-800 border border-amber-200">
           <strong>Stock not updated:</strong> {warning.join(' ')}
-        </div>
-      )}
-      {!warning.length && untrackedCount > 0 && (
-        <div className="mb-3 text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">
-          {untrackedCount} line(s) have no Item Code and no linked product — receiving updates the PO but will NOT change stock/inventory. Add an Item Code to track stock.
         </div>
       )}
       <Table columns={[
@@ -321,9 +299,9 @@ function ReceiveModal({ po, onClose, onDone }) {
         }},
         { key: 'action', label: '', render: (l) => {
           const pending = (l.quantity || 0) - (l.received_qty || 0)
-          return l.product_id || (l.item_code || '').trim()
+          return l.product_id || (l.item_code || '').trim() || (l.description || '').trim()
             ? <button disabled={busy || pending <= 0} onClick={() => doReceive(l.id, qty[l.id] || pending)} className="btn btn-accent text-xs py-1.5">{busy ? 'Saving…' : 'Receive'}</button>
-            : <span className="text-[0.6875rem] text-amber-600">No Item Code — stock not tracked</span>
+            : <span className="text-[0.6875rem] text-amber-600">Cannot identify product — add a description, item code or product</span>
         }},
       ]} data={po.lines || []} />
       <div className="flex justify-end mt-4"><button onClick={onClose} className="btn btn-secondary">Close</button></div>

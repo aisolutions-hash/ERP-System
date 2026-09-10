@@ -29,7 +29,8 @@ from ..services.customers import get_or_create_customer
 from ..services.local_orders import sync_local_orders_for_products
 from ..services.reorder_alerts import refresh_reorder_alert
 from ..services.stock_service import (
-    reconvert_document, resolve_or_create_product, reverse_and_remove_ref,
+    ensure_available_stock, reconvert_document, resolve_or_create_product,
+    reverse_and_remove_ref,
 )
 from datetime import date
 
@@ -45,6 +46,45 @@ def _get_plant_or_404(db: Session, plant_id: int | None, what: str) -> Plant | N
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail=f"{what} plant {plant_id} not found")
     return p
+
+
+def _line_totals(lines) -> dict[int, float]:
+    """product_id -> pooled OUT quantity for a set of document rows."""
+    totals: dict[int, float] = {}
+    for ln in lines:
+        if ln.product_id is not None and float(ln.quantity or 0) > 0:
+            totals[ln.product_id] = totals.get(ln.product_id, 0.0) + float(ln.quantity or 0)
+    return totals
+
+
+def _check_create_out_availability(db: Session, plant_id: int | None, lines, context: str) -> None:
+    """Locked availability guard for the OUT legs of a NEW document.
+
+    Each tracked line's OUT quantity must be covered by the current available
+    stock at the source location. Runs before any flush/commit, so a rejection
+    leaves no partial database write. Locks the row with FOR UPDATE so the check
+    and the subsequent deduction are atomic in the same transaction."""
+    totals = _line_totals(lines)
+    for pid in sorted(totals):
+        ensure_available_stock(db, pid, plant_id, totals[pid], context=context)
+
+
+def _check_edit_out_availability(db: Session, old_plant_id: int | None,
+                                 new_plant_id: int | None, old_lines, new_lines,
+                                 context: str) -> None:
+    """Net-delta availability guard for reconvert-based edits.
+
+    An edit reverses every existing leg then re-applies the document, so only
+    the NET additional OUT quantity per (product, source) must be covered.
+    When the source location changes, the old source is fully restored and the
+    new source must cover the full new quantity."""
+    old_totals = {pid: float(q or 0) for pid, q in _line_totals(old_lines).items()}
+    new_totals = _line_totals(new_lines)
+    same_plant = old_plant_id == new_plant_id
+    for pid in sorted(new_totals):
+        need = new_totals[pid] if not same_plant else (new_totals[pid] - old_totals.get(pid, 0.0))
+        if need > 0:
+            ensure_available_stock(db, pid, new_plant_id, need, context=context)
 
 
 # ---------------------------------------------------------------------------
@@ -303,8 +343,10 @@ def create_transfer(body: StockTransferCreate, db: Annotated[Session, Depends(ge
                       to_plant_id=body.to_plant_id,
                       transfer_date=body.transfer_date,
                       notes=(body.notes or "").strip())
-    _set_customer(db, t, body.customer_id, body.customer_name)
     t.lines = _resolve_lines(db, body.lines, "Transfer", StockTransferLine)
+    # Availability guard: the OUT leg (source location) must have the stock.
+    _check_create_out_availability(db, t.from_plant_id, t.lines, "stock transfer out")
+    _set_customer(db, t, body.customer_id, body.customer_name)
     db.add(t)
     db.flush()
     _apply_transfer_stock(db, t)
@@ -333,6 +375,9 @@ def update_transfer(transfer_id: int, body: StockTransferUpdate,
                     db: Annotated[Session, Depends(get_db)], user: AllStaff):
     t = get_or_404(db, StockTransfer, transfer_id)
     data = body.model_dump(exclude_unset=True)
+
+    old_from_plant_id = t.from_plant_id
+    old_lines = list(t.lines)
 
     if body.transfer_no is not None and body.transfer_no.strip() and body.transfer_no != t.transfer_no:
         if db.scalar(select(func.count()).select_from(StockTransfer)
@@ -368,10 +413,20 @@ def update_transfer(transfer_id: int, body: StockTransferUpdate,
     elif "customer_name" in data:
         _set_customer(db, t, None, body.customer_name)
 
+    # Resolve the new lines first so the availability guard can run BEFORE any
+    # stock reversal: the net-delta check must be against the location's REAL
+    # pre-edit available stock, not against its own restored amount.
+    new_lines = None
+    if change_lines:
+        new_lines = _resolve_lines(db, body.lines, "Transfer", StockTransferLine)
+    if change_lines or change_loc:
+        _check_edit_out_availability(db, old_from_plant_id, t.from_plant_id,
+                                     old_lines, new_lines or old_lines, "stock transfer out")
+
     if change_lines:
         reverse_and_remove_ref(db, "stock_transfer", t.id)
         db.query(StockTransferLine).filter(StockTransferLine.transfer_id == t.id).delete()
-        t.lines = _resolve_lines(db, body.lines, "Transfer", StockTransferLine)
+        t.lines = new_lines
     if change_lines or change_loc:
         _apply_transfer_stock(db, t)
 
@@ -504,6 +559,8 @@ def create_dispatch(body: CustomerDispatchCreate, db: Annotated[Session, Depends
                          remarks=(body.remarks or "").strip())
     _set_customer(db, d, body.customer_id, body.customer_name)
     d.lines = _resolve_lines(db, body.lines, "Dispatch", CustomerDispatchLine)
+    # Availability guard: every tracked line is an OUT leg at this location.
+    _check_create_out_availability(db, d.plant_id, d.lines, "customer dispatch")
     db.add(d)
     db.flush()
     _apply_dispatch_stock(db, d)
@@ -532,6 +589,9 @@ def update_dispatch(dispatch_id: int, body: CustomerDispatchUpdate,
     d = get_or_404(db, CustomerDispatch, dispatch_id)
     data = body.model_dump(exclude_unset=True)
 
+    old_plant_id = d.plant_id
+    old_lines = list(d.lines)
+
     if body.dispatch_no is not None and body.dispatch_no.strip() and body.dispatch_no != d.dispatch_no:
         if db.scalar(select(func.count()).select_from(CustomerDispatch)
                      .where(CustomerDispatch.dispatch_no == body.dispatch_no,
@@ -556,10 +616,20 @@ def update_dispatch(dispatch_id: int, body: CustomerDispatchUpdate,
     elif "customer_name" in data:
         _set_customer(db, d, None, body.customer_name)
 
+    # Resolve the new lines first so the net-delta availability guard runs
+    # BEFORE any stock reversal (real pre-edit available stock; full new
+    # quantity when the Dispatch location itself changed).
+    new_lines = None
+    if change_lines:
+        new_lines = _resolve_lines(db, body.lines, "Dispatch", CustomerDispatchLine)
+    if change_lines or change_loc:
+        _check_edit_out_availability(db, old_plant_id, d.plant_id,
+                                     old_lines, new_lines or old_lines, "customer dispatch")
+
     if change_lines:
         reverse_and_remove_ref(db, "customer_dispatch", d.id)
         db.query(CustomerDispatchLine).filter(CustomerDispatchLine.dispatch_id == d.id).delete()
-        d.lines = _resolve_lines(db, body.lines, "Dispatch", CustomerDispatchLine)
+        d.lines = new_lines
     if change_lines or change_loc:
         _apply_dispatch_stock(db, d)
 

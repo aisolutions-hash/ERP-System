@@ -162,6 +162,23 @@ body {
   color: #64748b;
 }
 
+/* ---------- Global numeric/business input sizing ----------
+   Qty, Rate, Amount, Less, Dispatch Qty, Schedule Qty, Balance Qty,
+   Received Qty, Production Qty, Transfer Qty, Stock Qty, Opening Stock and any
+   <input type="number"> across ALL departments. Larger, comfortable fields so
+   entered numbers are clearly visible. Purely presentation — no logic, formula
+   or validation change. */
+.input.input-num,
+.input[type='number'],
+input[type='number'],
+.input-num {
+  padding: 0.55rem 0.9rem;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+  min-height: 2.75rem;
+  letter-spacing: 0.01em;
+}
+
 /* Icon-prefixed inputs: left icon is absolutely positioned inside the
    relative container; these keep the caret/text clear of the icon. */
 .input-icon {

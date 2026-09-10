@@ -24,6 +24,7 @@ export default function Dispatch() {
   const [customers, setCustomers] = useState([])
   const [orders, setOrders] = useState([])
   const [products, setProducts] = useState([])
+  const [salespersons, setSalespersons] = useState([])
   const [loading, setLoading] = useState(true)
 
   // --- Dispatches (manage) state ---
@@ -90,6 +91,7 @@ export default function Dispatch() {
     api.get('/products', { params: { page_size: 500 } })
       .then((r) => setProducts(r.data.items || []))
       .catch(() => {})
+    api.get('/salespersons').then((r) => setSalespersons(r.data.items || [])).catch(() => {})
     api.get('/inventory/locations').then((r) => {
       const locs = r.data.items || []
       setLocations(locs)
@@ -823,8 +825,17 @@ export default function Dispatch() {
               <input value={dispForm.schedule_qty ?? ''} type="number" onChange={(e) => setDispForm({ ...dispForm, schedule_qty: e.target.value })} className="input" /></div>
             <div><label className="block text-slate-500 text-xs mb-1">Dispatch Date</label>
               <input type="date" value={dispForm.dispatch_date} onChange={(e) => setDispForm({ ...dispForm, dispatch_date: e.target.value })} className="input" /></div>
-            <div><label className="block text-slate-500 text-xs mb-1">Sales Person</label>
-              <input value={dispForm.sales_person || ''} onChange={(e) => setDispForm({ ...dispForm, sales_person: e.target.value })} className="input" /></div>
+            <div><label className="block text-slate-500 text-xs mb-1">Sales Person <span className="text-slate-400">(select or type new)</span></label>
+              <SearchSelect
+                options={salespersons.map((s) => ({ id: s.id, label: s.name }))}
+                value={dispForm.sales_person == null || dispForm.sales_person === '' ? null : (salespersons.find((s) => s.name === dispForm.sales_person)?.id || null)}
+                initialLabel={(salespersons.find((s) => s.name === dispForm.sales_person)?.name) || dispForm.sales_person || ''}
+                placeholder="Select or type a sales person"
+                onChange={(id, manual) => {
+                  const sp = id ? salespersons.find((s) => s.id === id) : null
+                  setDispForm((f) => ({ ...f, sales_person: sp ? sp.name : (manual || '') }))
+                }}
+              /></div>
             <div><label className="block text-slate-500 text-xs mb-1">Remarks</label>
               <input value={dispForm.remarks || ''} onChange={(e) => setDispForm({ ...dispForm, remarks: e.target.value })} className="input" /></div>
           </div>

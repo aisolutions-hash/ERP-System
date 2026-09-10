@@ -347,7 +347,20 @@ def excel_report(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
 # ---------------------------------------------------------------------------
 def _delivery_rows(db: Session, customer_id: int | None = None,
                    date_from: str = "", date_to: str = ""):
-    """Per order-line delivery ledger with rollup-ready fields."""
+    """Per order-line delivery ledger with rollup-ready fields (C4).
+
+    Attribution model (no random guessing):
+      * a DispatchLine linked to a sales order line (`sales_order_line_id`) is
+        attributed EXACTLY to that order line;
+      * a DispatchLine with NO line link is pooled per (order, product). It is
+        attributed to an order line ONLY when the order has a single line for
+        that product (provable by identity); otherwise it stays UNALLOCATED and
+        is surfaced as such instead of being assigned to any line.
+
+    Returns (items, unallocated): `items` is one row per order line with the
+    exact attributed dispatched qty; `unallocated` carries every dispatch qty
+    that could not be safely attributed so no data is hidden.
+    """
     stmt = (select(SalesOrder, SalesOrderLine)
             .join(SalesOrderLine, SalesOrderLine.order_id == SalesOrder.id))
     if customer_id:
@@ -357,16 +370,65 @@ def _delivery_rows(db: Session, customer_id: int | None = None,
     if date_to:
         stmt = stmt.where(SalesOrder.order_date <= date.fromisoformat(date_to))
     rows = db.execute(stmt).all()
+    if not rows:
+        return [], []
+
+    order_ids = sorted({o.id for o, _ in rows})
+
+    # (order_id, product_id) -> number of ORDER lines for that product.
+    product_line_count: dict[tuple, int] = {}
+    for o, ln in rows:
+        if ln.product_id is not None:
+            key = (o.id, ln.product_id)
+            product_line_count[key] = product_line_count.get(key, 0) + 1
+
+    # Dispatch lines of the filtered orders.
+    dq = (select(
+            DispatchLine.quantity, DispatchLine.product_id,
+            DispatchLine.sales_order_line_id, Dispatch.sales_order_id,
+            Dispatch.dispatch_no, Dispatch.plant_id,
+        )
+        .join(Dispatch, Dispatch.id == DispatchLine.dispatch_id)
+        .where(Dispatch.sales_order_id.in_(order_ids)))
+    dispatch_rows = db.execute(dq).all()
+
+    exact_by_line: dict[tuple, float] = {}       # (order_id, line_id) -> sum
+    pool_by_order_product: dict[tuple, float] = {}  # (order_id, product_id) -> sum of unlinked
+    pool_meta: dict[tuple, dict] = {}
+    for qty, pid, sol_id, so_id, dno, plant_id in dispatch_rows:
+        q = float(qty or 0)
+        if q == 0:
+            continue
+        if sol_id is not None:
+            key = (so_id, sol_id)
+            exact_by_line[key] = exact_by_line.get(key, 0.0) + q
+            continue
+        if pid is not None:
+            key = (so_id, pid)
+            pool_by_order_product[key] = pool_by_order_product.get(key, 0.0) + q
+            meta = pool_meta.setdefault(key, {"dispatch_nos": set(), "location": None})
+            meta["dispatch_nos"].add(dno or "")
+            meta["location"] = _location_name(db, plant_id)
+
+    orders_by_id = {o.id: o for o, _ in rows}
     items = []
     for o, ln in rows:
-        dispatched = db.scalar(
-            select(func.coalesce(func.sum(DispatchLine.quantity), 0))
-            .select_from(Dispatch)
-            .join(DispatchLine, DispatchLine.dispatch_id == Dispatch.id)
-            .where(Dispatch.sales_order_id == o.id)
-        ) or 0.0
         ordered = float(ln.quantity or 0)
-        disp = float(dispatched or 0)
+        exact = exact_by_line.get((o.id, ln.id), 0.0)
+        extra = 0.0
+        unallocated_for_row = 0.0
+        if ln.product_id is not None:
+            key = (o.id, ln.product_id)
+            pool = pool_by_order_product.get(key, 0.0)
+            if pool:
+                if product_line_count[key] == 1:
+                    extra = pool
+                else:
+                    # Only the first order line of this product carries the
+                    # unattributable qty marker; the aggregate lives in the
+                    # `unallocated` collection returned alongside.
+                    unallocated_for_row = pool
+        disp = exact + extra
         if ordered == 0:
             dstatus = "Not Dispatched"
         elif disp >= ordered:
@@ -382,11 +444,38 @@ def _delivery_rows(db: Session, customer_id: int | None = None,
             "customer_po_no": ln.customer_po_no or o.customer_po_no or "",
             "product_id": ln.product_id, "model": ln.product.model if ln.product else None,
             "item_code": ln.product.item_code if ln.product else (ln.description or ""),
-            "ordered_qty": ordered, "dispatched_qty": disp,
+            "ordered_qty": ordered, "dispatched_qty": round(disp, 4),
             "balance_qty": round(ordered - disp, 4),
+            "exact_dispatched": round(exact, 4),
+            "unallocated_qty": round(unallocated_for_row, 4),
             "delivery_status": dstatus,
         })
-    return items
+
+    # Unlinked dispatch quantities that cannot be safely attributed to a single
+    # order line (order has multiple lines for the same product).
+    unallocated = []
+    for (so_id, pid), pool in sorted(pool_by_order_product.items()):
+        if product_line_count.get((so_id, pid), 0) > 1:
+            meta = pool_meta.get((so_id, pid), {})
+            so = orders_by_id.get(so_id)
+            unallocated.append({
+                "order_id": so_id,
+                "order_no": so.order_no if so else str(so_id),
+                "customer_id": so.customer_id if so else None,
+                "customer": so.customer.name if (so and so.customer) else None,
+                "product_id": pid,
+                "dispatch_no": ", ".join(sorted(meta.get("dispatch_nos", set()))),
+                "location": meta.get("location"),
+                "quantity": round(pool, 4),
+            })
+    return items, unallocated
+
+
+def _location_name(db: Session, plant_id):
+    if plant_id is None:
+        return "Main Store"
+    p = db.get(Plant, plant_id)
+    return p.name if p else f"plant {plant_id}"
 
 
 @router.get("/delivery")
@@ -399,8 +488,12 @@ def delivery_report(
     status: str = "",
 ):
     """Delivery report: classify each order line as Completed / Partially
-    Dispatched / Not Dispatched, plus a per-customer rollup."""
-    items = _delivery_rows(db, customer_id=customer_id, date_from=date_from, date_to=date_to)
+    Dispatched / Not Dispatched, plus a per-customer rollup. Dispatch quantities
+    are attributed per line (exact via sales_order_line_id, product-identity
+    pool only when provable); anything unattributable is reported separately in
+    `unallocated` instead of being guessed (C4).
+    """
+    items, unallocated = _delivery_rows(db, customer_id=customer_id, date_from=date_from, date_to=date_to)
     if status:
         items = [i for i in items if i["delivery_status"] == status]
 
@@ -435,6 +528,7 @@ def delivery_report(
 
     total_ordered = round(sum(x["ordered_qty"] for x in items), 4)
     total_dispatched = round(sum(x["dispatched_qty"] for x in items), 4)
+    unallocated_total = round(sum(u["quantity"] for u in unallocated), 4)
     status_count = {}
     for i in items:
         status_count[i["delivery_status"]] = status_count.get(i["delivery_status"], 0) + 1
@@ -442,10 +536,12 @@ def delivery_report(
         "items": items,
         "summary": summary,
         "total": len(items),
+        "unallocated": unallocated,
         "totals": {
             "ordered": total_ordered,
             "dispatched": total_dispatched,
             "balance": round(total_ordered - total_dispatched, 4),
+            "unallocated": unallocated_total,
             "by_status": status_count,
         },
     }
@@ -459,10 +555,14 @@ def delivery_csv(
     date_from: str = "",
     date_to: str = "",
 ):
-    items = _delivery_rows(db, customer_id=customer_id, date_from=date_from, date_to=date_to)
+    items, unallocated = _delivery_rows(db, customer_id=customer_id, date_from=date_from, date_to=date_to)
     headers = ["Order No", "Customer", "Order Date", "PO No", "Product", "Item Code",
                "Ordered Qty", "Dispatched Qty", "Balance", "Delivery Status"]
     data = [[i["order_no"], i["customer"] or "", i["order_date"], i["customer_po_no"],
              i["model"] or "", i["item_code"], i["ordered_qty"], i["dispatched_qty"],
              i["balance_qty"], i["delivery_status"]] for i in items]
+    for u in unallocated:
+        data.append([u["order_no"], u["customer"] or "", "", "",
+                     "(unallocated)", str(u["product_id"] or ""),
+                     0, u["quantity"], -u["quantity"], "Unallocated"])
     return _csv_response(headers, data, "delivery_report.csv")

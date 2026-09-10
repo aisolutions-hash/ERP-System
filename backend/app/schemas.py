@@ -265,6 +265,50 @@ class StockMovementIn(BaseModel):
     remarks: str = ""
 
 
+class ManualAddStockIn(BaseModel):
+    """Add physical/manual stock received at a location.
+
+    Item Code is OPTIONAL. When a `product_id` is given it is reused as the
+    tracking identity. Otherwise the item is matched/created through the shared
+    `resolve_or_create_product` helper (blank-code + description -> a fresh
+    Product with a unique internal ID; never merged by description). Stock is
+    recorded through the same `apply_movement`/Inventory pipeline used by
+    purchases / transfers / production so Inventory and StockMovement stay
+    consistent and other modules see the stock automatically.
+    """
+    product_id: Optional[int] = None
+    item_code: Optional[str] = ""
+    description: Optional[str] = ""
+    quantity: float = Field(gt=0, description="Quantity to add (must be > 0)")
+    unit: Optional[str] = None          # -> Product.uom when creating/laid on product
+    category: Optional[str] = None      # only used when creating a NEW product
+    plant_id: Optional[int] = None      # None = Main Store
+    transaction_date: date = Field(default_factory=date.today)
+    remarks: Optional[str] = ""         # reference / note carried on the movement
+    min_level: Optional[float] = None   # optional reorder/min level on the inventory row
+
+
+class InventoryUpdate(BaseModel):
+    """Edit an existing Inventory row.
+
+    Quantity reconcile uses the shared movement pipeline (a compensating
+    StockMovement) so the balance is corrected WITHOUT double-counting and the
+    movement history stays in sync. Unit/Item Code update the underlying
+    Product (same Product ID is preserved — never duplicated). Location/Product
+    change is allowed only when safe (zero balance with no attached movements);
+    otherwise the caller should use the existing transfer flow which moves stock
+    and preserves history.)
+    """
+    quantity: Optional[float] = None
+    min_level: Optional[float] = None
+    unit: Optional[str] = None          # -> Product.uom
+    item_code: Optional[str] = None     # -> same Product (no duplicate)
+    description: Optional[str] = None   # -> Product.model/name (same Product)
+    plant_id: Optional[int] = None      # safe relocate only (see above)
+    product_id: Optional[int] = None    # safe repoint only
+    remarks: Optional[str] = ""         # carried on the reconcile movement
+
+
 class StockMovementOut(ORMModel):
     id: int
     product_id: int
@@ -473,6 +517,7 @@ def _order_status(obj):
 class SalesOrderLineIn(BaseModel):
     product_id: Optional[int] = None
     description: str = ""
+    item_code: str = ""
     quantity: float = 0
     unit_price: Optional[float] = None
     less: Optional[float] = None
@@ -483,6 +528,7 @@ class SalesOrderLineIn(BaseModel):
 class SalesOrderLineUpdate(BaseModel):
     product_id: Optional[int] = None
     description: Optional[str] = None
+    item_code: Optional[str] = None
     quantity: Optional[float] = None
     unit_price: Optional[float] = None
     less: Optional[float] = None
@@ -491,13 +537,14 @@ class SalesOrderLineUpdate(BaseModel):
 
 
 class SalesOrderCreate(BaseModel):
-    order_no: Optional[str] = None
+    order_no: str = Field(min_length=1, max_length=120)
     customer_id: Optional[int] = None
     customer_name: str = ""
     order_type: OrderType = OrderType.oem
     local_order_type: Optional[str] = None
     customer_po_no: str = ""
     salesperson_id: Optional[int] = None
+    salesperson_name: str = ""
     order_date: date = Field(default_factory=date.today)
     required_delivery_date: Optional[date] = None
     status: OrderStatus = OrderStatus.new
@@ -510,6 +557,11 @@ class SalesOrderCreate(BaseModel):
 class SalesOrderUpdate(BaseModel):
     customer_id: Optional[int] = None
     customer_name: Optional[str] = None
+    order_type: Optional[OrderType] = None
+    order_no: Optional[str] = None
+    customer_po_no: Optional[str] = None
+    salesperson_id: Optional[int] = None
+    salesperson_name: Optional[str] = None
     order_date: Optional[date] = None
     required_delivery_date: Optional[date] = None
     local_order_type: Optional[str] = None
@@ -527,6 +579,8 @@ class LocalOrderLineIn(SalesOrderLineIn):
 
 class LocalOrderCreate(BaseModel):
     order_no: Optional[str] = None
+    so_no: Optional[str] = None
+    customer_po_no: Optional[str] = None
     customer_id: Optional[int] = None
     customer_name: str = ""
     local_order_type: Optional[str] = None
@@ -542,6 +596,8 @@ class LocalOrderCreate(BaseModel):
 class LocalOrderUpdate(BaseModel):
     customer_id: Optional[int] = None
     customer_name: Optional[str] = None
+    so_no: Optional[str] = None
+    customer_po_no: Optional[str] = None
     order_date: Optional[date] = None
     required_delivery_date: Optional[date] = None
     local_order_type: Optional[str] = None

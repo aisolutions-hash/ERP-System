@@ -1,18 +1,110 @@
 """Production & dispatch plans (from the PLANE sheet) - CRUD."""
+from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..auth import CurrentUser, AllStaff, ManagerOrAdmin
 from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
-from ..models import Customer, Plan, PlanType, Product, ProductCategory, ProductSourceType
+from ..models import (
+    Customer, MovementType, Plan, PlanType, Plant, Product, ProductCategory,
+    ProductSourceType, StockMovement,
+)
 from ..schemas import PlanCreate, PlanOut, PlanUpdate
 from ..services.customers import get_or_create_customer
+from ..services.reorder_alerts import refresh_reorder_alert
+from ..services.stock_service import (
+    apply_movement, get_or_create_inventory, reverse_and_remove_ref,
+)
 
 router = APIRouter(prefix="/plans", tags=["plans"])
+
+
+def _post_plan_output(db: Session, p: Plan) -> None:
+    """Post finished-goods stock when a production plan is COMPLETED.
+
+    A `Plan` of type PRODUCTION_PLAN records the finished-goods output of the
+    planned `quantity`. Completing it posts that qty as a PRODUCTION_OUTPUT
+    movement to the Main Store (plant_id = NULL) through the shared
+    `apply_movement` pipeline, which raises Inventory and records the
+    StockMovement. Idempotent: a completed plan that already posted its output
+    (ref_type='plan' / ref_id) is never posted again, so re-saving a completed
+    plan (or a retried completion) cannot duplicate stock.
+    """
+    if p.plan_type != PlanType.production:
+        return
+    if (p.status or "").strip().upper() != "COMPLETED":
+        return
+    if not p.product_id or not p.quantity or float(p.quantity or 0) <= 0:
+        return
+    already = db.scalar(select(StockMovement.id).where(
+        StockMovement.ref_type == "plan",
+        StockMovement.ref_id == p.id,
+    ).limit(1))
+    if already:
+        return
+    apply_movement(
+        db, p.product_id, MovementType.production_output, float(p.quantity),
+        p.plan_date or date.today(),
+        ref_type="plan", ref_id=p.id,
+        remarks=f"Production output {p.model}",
+        plant_id=None,
+    )
+    if p.product_id:
+        refresh_reorder_alert(db, p.product_id)
+
+
+def _plan_output_movements(db: Session, plan_id: int) -> list[StockMovement]:
+    return db.scalars(select(StockMovement).where(
+        StockMovement.ref_type == "plan",
+        StockMovement.ref_id == plan_id,
+    )).all()
+
+
+def _reverse_plan_output(db: Session, p: Plan) -> None:
+    """Reverse a posted production-plan output (delete / un-complete, C2).
+
+    When a COMPLETED production plan is deleted or moved back to a
+    non-COMPLETED status, the PRODUCTION_OUTPUT it posted to the Main Store is
+    reversed through the shared `reverse_and_remove_ref` pipeline (the same
+    mechanism transfers / dispatches use), so Inventory and StockMovement stay
+    consistent. Idempotent: a plan with no posted movements is a no-op, and a
+    retry after a partial failure can never double-reverse.
+
+    Guard: reversal is ONLY allowed if it does not drive any affected location's
+    stock negative (i.e. the produced quantity has not already been fully
+    dispatched / transferred / consumed downstream). In that case a business
+    error is returned and NOTHING is reversed — the caller must fix the
+    downstream stock first instead of silently corrupting balances.
+    """
+    if p.plan_type != PlanType.production:
+        return
+    movements = _plan_output_movements(db, p.id)
+    if not movements:
+        return
+    for m in movements:
+        qty = float(m.quantity or 0)
+        inv = get_or_create_inventory(db, m.product_id, m.plant_id)
+        current = float(inv.current_stock or 0)
+        resulting = current - qty
+        if resulting < 0:
+            location = "Main Store"
+            if m.plant_id is not None:
+                plant = db.get(Plant, m.plant_id)
+                location = plant.name if plant else f"plant {m.plant_id}"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(f"Cannot undo plan {p.id}: reversing {qty:g} at {location} would bring "
+                        f"stock to {resulting:g}. The produced quantity has already been "
+                        f"dispatched/used downstream — post an inbound receipt or adjust the "
+                        f"downstream document first."),
+            )
+    reverse_and_remove_ref(db, "plan", p.id)
+    if p.product_id:
+        refresh_reorder_alert(db, p.product_id)
 
 
 def _resolve_product(db: Session, product_id, model) -> Product | None:
@@ -86,6 +178,8 @@ def create_plan(body: PlanCreate, db: Annotated[Session, Depends(get_db)],
     db.add(p)
     db.commit()
     db.refresh(p)
+    _post_plan_output(db, p)
+    db.commit()
     write_audit(db, user, "CREATE", "plans", p.id, f"Created {p.plan_type.value} plan for {p.model}")
     return p
 
@@ -95,6 +189,7 @@ def update_plan(plan_id: int, body: PlanUpdate, db: Annotated[Session, Depends(g
                 user: AllStaff):
     p = get_or_404(db, Plan, plan_id)
     data = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
+    was_completed = (p.status or "").strip().upper() == "COMPLETED" and p.plan_type == PlanType.production
     if "model" in data or "product_id" in data:
         model = data.get("model", p.model)
         product_id = data.get("product_id", p.product_id)
@@ -109,6 +204,13 @@ def update_plan(plan_id: int, body: PlanUpdate, db: Annotated[Session, Depends(g
     data.pop("customer_name", None)
     valid = {k: v for k, v in data.items() if k in PlanUpdate.model_fields}
     apply_updates(p, PlanUpdate(**valid))
+    now_completed = (p.status or "").strip().upper() == "COMPLETED" and p.plan_type == PlanType.production
+    if was_completed and not now_completed:
+        # Un-completing a production plan reverses its posted output (C2).
+        _reverse_plan_output(db, p)
+    else:
+        # Post once on completion (idempotent); re-completing is a no-op.
+        _post_plan_output(db, p)
     db.commit()
     db.refresh(p)
     write_audit(db, user, "UPDATE", "plans", p.id, f"Updated plan {p.id}")
@@ -119,6 +221,9 @@ def update_plan(plan_id: int, body: PlanUpdate, db: Annotated[Session, Depends(g
 def delete_plan(plan_id: int, db: Annotated[Session, Depends(get_db)],
                 user: ManagerOrAdmin):
     p = get_or_404(db, Plan, plan_id)
+    # Deleting a completed production plan reverses its posted output first
+    # (guarded: never drives stock negative) (C2).
+    _reverse_plan_output(db, p)
     db.delete(p)
     db.commit()
     write_audit(db, user, "DELETE", "plans", plan_id, f"Deleted plan {p.id}")

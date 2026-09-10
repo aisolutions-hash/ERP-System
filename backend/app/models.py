@@ -311,7 +311,7 @@ class PurchaseOrder(Base):
     __tablename__ = "purchase_orders"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    po_number: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    po_number: Mapped[str] = mapped_column(String(120), index=True)
     supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True, index=True)
     supplier_name: Mapped[str] = mapped_column(String(255), default="", index=True)
     order_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
@@ -535,12 +535,13 @@ class SalesOrder(Base):
     __tablename__ = "sales_orders"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    order_no: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    order_no: Mapped[str] = mapped_column(String(120), index=True)
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
     customer_name: Mapped[str] = mapped_column(String(255), default="", index=True)
     order_type: Mapped[OrderType] = mapped_column(Enum(OrderType), default=OrderType.oem, index=True)
     local_order_type: Mapped[str] = mapped_column(String(20), default="TRADING")
     customer_po_no: Mapped[str] = mapped_column(String(120), default="", index=True)
+    so_no: Mapped[str] = mapped_column(String(120), default="")
     salesperson_id: Mapped[int | None] = mapped_column(ForeignKey("salespersons.id"), nullable=True)
     period_id: Mapped[int | None] = mapped_column(ForeignKey("reporting_periods.id"), nullable=True, index=True)
     order_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
@@ -567,6 +568,7 @@ class SalesOrderLine(Base):
     order_id: Mapped[int] = mapped_column(ForeignKey("sales_orders.id"), index=True)
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
     description: Mapped[str] = mapped_column(Text, default="")
+    item_code: Mapped[str] = mapped_column(String(120), default="", index=True)
     quantity: Mapped[float] = mapped_column(Float, default=0)
     customer_po_no: Mapped[str] = mapped_column(String(120), default="")
     unit_price: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)

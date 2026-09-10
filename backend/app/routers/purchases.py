@@ -63,31 +63,47 @@ def _recalc(po: PurchaseOrder, lines: list[PurchaseOrderLine]):
 
 def _attach_stock_warnings(result: dict, lines):
     """Add a `warnings` list only for received lines that truly cannot be
-    stock-tracked (no linked product AND no Item Code). Manual lines with an
-    Item Code are resolved into the stock system and need no warning."""
+    stock-tracked (no linked product, no Item Code AND no description).
+
+    Blank-item-code lines with a description get their own tracked Product via
+    `_resolve_line_product` (internal ID), so they never appear here."""
     flagged = [ln for ln in lines
                if ln.product_id is None
                and not (ln.item_code or "").strip()
+               and not (ln.description or "").strip()
                and float(ln.received_qty or 0) > 0]
     if flagged:
         result["warnings"] = [
-            f"Line {ln.id} ({ln.description or 'manual item'}) has no Item Code and no linked product — "
-            "receipt recorded on the PO but stock was NOT updated. Add an Item Code or link a product to track stock."
+            f"Line {ln.id} has no Item Code, no description and no linked product — "
+            "its quantity could not be mapped to a Product, so stock was NOT updated. "
+            "Add a description (or an Item Code, or select a product) to track stock."
             for ln in flagged]
 
 
 def _resolve_line_product(db: Session, line: PurchaseOrderLine) -> Product | None:
     """Return the Product that owns inventory/stock for a PO line.
 
-    Catalogue-linked lines resolve directly. Manual lines (product_id None)
-    with an Item Code are matched/created as a Product keyed on that Item Code
-    so they flow through the existing Inventory + StockMovement pipeline without
-    requiring a Product Master entry up front. Manual lines with no Item Code
-    cannot be uniquely identified and resolve to None (stock stays untouched).
+    Catalogue-linked lines resolve directly (their internal Product ID is the
+    definitive tracker). Manual lines with no linked product are resolved via
+    `resolve_or_create_product` with `allow_blank=True`: an Item Code matches/
+    creates a Product keyed on (item_code, model), and a blank Item Code with a
+    description gets its own fresh Product so stock is always tracked. Two
+    blank-code lines with the same description are never merged — each keeps a
+    distinct internal ID. If a blank-code line later gets an Item Code, the code
+    is written onto the same Product ID so stock history is preserved. Returns
+    None only when there is genuinely nothing to identify (blank code and
+    description, no linked product).
     """
     if line.product_id:
-        return db.get(Product, line.product_id)
-    p = resolve_or_create_product(db, line.item_code, line.description)
+        p = db.get(Product, line.product_id)
+        ic = (line.item_code or "").strip()
+        if p is not None and ic and not (p.item_code or "").strip():
+            conflict = db.scalar(select(Product.id).where(
+                Product.item_code == ic, Product.id != p.id).limit(1))
+            if conflict is None:
+                p.item_code = ic
+        return p
+    p = resolve_or_create_product(db, line.item_code, line.description, allow_blank=True)
     if p:
         line.product_id = p.id
     return p
@@ -127,8 +143,6 @@ def list_purchases(
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_purchase(body: PurchaseOrderCreate, db: Annotated[Session, Depends(get_db)],
                     user: ManagerOrAdmin):
-    if db.query(PurchaseOrder).filter(PurchaseOrder.po_number == body.po_number).first():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="PO number already exists")
     if body.supplier_id is not None and not db.get(Supplier, body.supplier_id):
         raise HTTPException(status_code=400, detail=f"Supplier {body.supplier_id} not found")
     po = PurchaseOrder(po_number=body.po_number, supplier_id=body.supplier_id,
@@ -156,10 +170,6 @@ def update_purchase(po_id: int, body: PurchaseOrderUpdate, db: Annotated[Session
                     user: ManagerOrAdmin):
     po = get_or_404(db, PurchaseOrder, po_id)
     if body.po_number is not None and body.po_number != po.po_number:
-        if db.query(PurchaseOrder).filter(
-                PurchaseOrder.po_number == body.po_number,
-                PurchaseOrder.id != po.id).first():
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="PO number already exists")
         po.po_number = body.po_number
     if body.supplier_id is not None and not db.get(Supplier, body.supplier_id):
         raise HTTPException(status_code=400, detail=f"Supplier {body.supplier_id} not found")
@@ -216,47 +226,6 @@ def receive_purchase(po_id: int, line_id: int, received_qty: float,
     db.refresh(po)
     write_audit(db, user, "RECEIVE", "purchase_orders", po.id, f"Received {received_qty} for line {line_id}")
     sync_purchase_shortages(db)
-    result = _serialize_po(db, po)
-    _attach_stock_warnings(result, po.lines)
-    return result
-
-
-@router.post("/{po_id}/grn-done", response_model=dict)
-def grn_done(po_id: int, db: Annotated[Session, Depends(get_db)],
-             user: ManagerOrAdmin):
-    """Complete the GRN for a PO in one atomic pass.
-
-    Receives every remaining pending quantity on the PO: stock movement
-    (INWARD) is recorded per line exactly once, and the PO advances to
-    `Received`. Already-received lines are skipped (delta <= 0), so repeating
-    the action is idempotent and never duplicates stock movements."""
-    po = get_or_404(db, PurchaseOrder, po_id)
-    if po.status == PurchaseStatus.cancelled:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Cannot complete GRN for a cancelled PO")
-    today = date.today()
-    received_any = False
-    for line in po.lines:
-        qty = float(line.quantity or 0)
-        if qty <= 0:
-            continue
-        delta = qty - float(line.received_qty or 0)
-        if delta <= 0:
-            continue  # idempotent: nothing pending for this line
-        line.received_qty = qty
-        product = _resolve_line_product(db, line)
-        if product:
-            apply_movement(db, product.id, MovementType.receipt, delta,
-                           today, ref_type="purchase_order", ref_id=po.id,
-                           remarks=f"Receipt against PO {po.po_number}")
-            refresh_reorder_alert(db, product.id)
-        received_any = True
-    _recalc(po, po.lines)
-    db.commit()
-    db.refresh(po)
-    if received_any:
-        write_audit(db, user, "GRN", "purchase_orders", po.id, f"GRN completed for PO {po.po_number}")
-        sync_purchase_shortages(db)
     result = _serialize_po(db, po)
     _attach_stock_warnings(result, po.lines)
     return result

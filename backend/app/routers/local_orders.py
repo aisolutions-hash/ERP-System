@@ -17,14 +17,15 @@ Local Orders are SalesOrder(order_type=LOCAL) + SalesOrderLine. This router:
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import Integer, func, or_, select
+from sqlalchemy import Integer, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..auth import CurrentUser, AllStaff, ManagerOrAdmin
 from ..crud import write_audit
 from ..database import get_db
 from ..models import (
-    Customer, Dispatch, DispatchLine, OrderStatus, OrderType, Plan, SalesOrder,
+    Customer, Dispatch, DispatchLine, OrderStatus, OrderType, Plan,
+    ProductionOrder, PurchaseRequirement, SalesOrder,
     SalesOrderLine,
 )
 from ..schemas import LocalOrderCreate, LocalOrderUpdate
@@ -204,6 +205,8 @@ def create_local_order(body: LocalOrderCreate, db: Annotated[Session, Depends(ge
                    customer_id=customer_id, customer_name=customer_name,
                    order_type=OrderType.local,
                    local_order_type=normalize_local_type(body.local_order_type),
+                   so_no=(body.so_no or "").strip()[:120],
+                   customer_po_no=(body.customer_po_no or "").strip()[:120],
                    order_date=body.order_date or date.today(),
                    required_delivery_date=body.required_delivery_date,
                    status=OrderStatus.new, remarks=body.remarks or "",
@@ -234,6 +237,10 @@ def update_local_order(order_id: int, body: LocalOrderUpdate,
 
     if "local_order_type" in data:
         o.local_order_type = normalize_local_type(body.local_order_type)
+    if "so_no" in data:
+        o.so_no = (body.so_no or "").strip()[:120]
+    if "customer_po_no" in data:
+        o.customer_po_no = (body.customer_po_no or "").strip()[:120]
     if "order_date" in data and body.order_date is not None:
         o.order_date = body.order_date
     if "required_delivery_date" in data:
@@ -268,6 +275,9 @@ def delete_local_order(order_id: int, db: Annotated[Session, Depends(get_db)],
     if db.scalar(select(func.count()).select_from(Dispatch).where(Dispatch.sales_order_id == o.id)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="Cannot delete local order: it has dispatches.")
+    db.execute(update(ProductionOrder).where(ProductionOrder.sales_order_id == o.id)
+               .values(sales_order_id=None))
+    db.execute(delete(PurchaseRequirement).where(PurchaseRequirement.sales_order_id == o.id))
     db.delete(o)
     db.commit()
     write_audit(db, user, "DELETE", "sales_orders", o.id, f"Deleted LOCAL order {o.order_no}")

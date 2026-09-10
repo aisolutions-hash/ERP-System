@@ -8,13 +8,17 @@ import { fmtNum } from '../lib/format'
 
 const TABS = [
   { key: 'all', label: 'All', icon: <Layers size={15} /> },
-  { key: 'oem', label: 'OEM', icon: <ShoppingBag size={15} /> },
+  { key: 'oem', label: 'Manufacture', icon: <ShoppingBag size={15} /> },
   { key: 'trading', label: 'Trading', icon: <ShoppingBag size={15} /> },
 ]
 
-const ORDER_TYPES = ['OEM', 'TRADING']
+const ORDER_TYPE_OPTIONS = [
+  { value: 'OEM', label: 'Manufacture' },
+  { value: 'TRADING', label: 'Trading' },
+]
+const orderTypeLabel = (t) => ORDER_TYPE_OPTIONS.find((o) => o.value === t)?.label || t || '—'
 
-const emptyLine = { product_id: null, description: '', quantity: 1, unit_price: null }
+const emptyLine = { product_id: null, description: '', item_code: '', quantity: 1, unit_price: null }
 
 const errText = (err) => {
   const d = err?.response?.data?.detail
@@ -35,6 +39,7 @@ export default function Orders() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [editLine, setEditLine] = useState(null)
+  const [soPoForm, setSoPoForm] = useState(null)
   const [form, setForm] = useState({})
   const [lineForm, setLineForm] = useState({})
   const [customers, setCustomers] = useState([])
@@ -91,7 +96,9 @@ export default function Orders() {
   const saveLine = () => {
     if (!lineForm.id) return
     api.patch(`/orders/lines/${lineForm.id}`, {
-      product_id: lineForm.product_id, description: lineForm.description, quantity: Number(lineForm.quantity),
+      product_id: lineForm.product_id, description: lineForm.description,
+      item_code: (lineForm.item_code || '').trim(),
+      quantity: Number(lineForm.quantity),
       unit_price: lineForm.unit_price != null ? Number(lineForm.unit_price) : null,
       less: lineForm.less != null && lineForm.less !== '' ? Number(lineForm.less) : null,
       amount: lineForm.amount != null ? Number(lineForm.amount) : null,
@@ -100,13 +107,29 @@ export default function Orders() {
       .then((res) => { setDetail(res.data); setEditLine(null); setLineForm({}) })
   }
 
+  const saveSoPo = () => {
+    if (!soPoForm || !detail) return
+    if (!(soPoForm.order_no || '').trim()) { window.alert('SO Number is required and cannot be blank.'); return }
+    api.patch(`/orders/${detail.id}`, {
+      order_no: soPoForm.order_no.trim(),
+      customer_po_no: soPoForm.customer_po_no || '',
+    })
+      .then((res) => { setDetail(res.data); setSoPoForm(null) })
+      .catch((err) => {
+        const d = err?.response?.data?.detail
+        window.alert(typeof d === 'string' ? d : 'Failed to update order details.')
+      })
+  }
+
   const openCreate = () => {
     setForm({
       customer_id: null,
       customer_name: '',
       order_type: tab === 'all' ? 'OEM' : tab.toUpperCase(),
+      order_no: '',
       customer_po_no: '',
       salesperson_id: null,
+      salesperson_name: '',
       order_date: new Date().toISOString().slice(0, 10),
       remarks: '',
       lines: [{ ...emptyLine }],
@@ -142,6 +165,7 @@ export default function Orders() {
   const validateCreate = () => {
     const errs = {}
     if (!form.customer_id && !(form.customer_name || '').trim()) errs.customer_id = 'Select or type a customer'
+    if (!(form.order_no || '').trim()) errs.order_no = 'SO Number is required'
     const lines = form.lines || []
     if (lines.length === 0) errs.lines = 'Add at least one product line'
     lines.forEach((l, i) => {
@@ -155,7 +179,13 @@ export default function Orders() {
   const handleProductLine = (i, id, manual) => {
     const lines = [...(form.lines || [])]
     if (id) {
-      lines[i] = { ...lines[i], product_id: id, description: manual || lines[i].description }
+      const product = products.find((p) => String(p.id) === String(id))
+      lines[i] = {
+        ...lines[i],
+        product_id: id,
+        description: manual || lines[i].description,
+        item_code: product?.item_code || lines[i].item_code || '',
+      }
     } else {
       lines[i] = { ...lines[i], product_id: null, description: manual || '' }
     }
@@ -169,13 +199,16 @@ export default function Orders() {
       customer_id: form.customer_id,
       customer_name: (form.customer_name || '').trim(),
       order_type: form.order_type,
+      order_no: (form.order_no || '').trim(),
       customer_po_no: form.customer_po_no || '',
       salesperson_id: form.salesperson_id || null,
+      salesperson_name: (form.salesperson_name || '').trim(),
       order_date: form.order_date || new Date().toISOString().slice(0, 10),
       remarks: form.remarks || '',
       lines: (form.lines || []).map((l) => ({
         product_id: l.product_id,
         description: l.description || '',
+        item_code: (l.item_code || '').trim(),
         quantity: Number(l.quantity),
         unit_price: Number(l.unit_price) || null,
         amount: lineTotal(l) || null,
@@ -194,9 +227,9 @@ export default function Orders() {
   }
 
   const orderCols = [
-    { key: 'order_no', label: 'Order No', render: (r) => <span className="font-mono text-xs font-medium">{r.order_no}</span> },
+    { key: 'order_no', label: 'SO No', render: (r) => <span className="font-mono text-xs font-medium">{r.order_no}</span> },
     { key: 'customer', label: 'Customer', render: (r) => <span className="font-medium">{r.customer?.name || '—'}</span> },
-    { key: 'order_type', label: 'Type', render: (r) => <Badge className={r.order_type === 'OEM' ? 'bg-slate-800 text-white' : 'bg-cyan-100 text-cyan-700'}>{r.order_type}</Badge> },
+    { key: 'order_type', label: 'Type', render: (r) => <Badge className={r.order_type === 'OEM' ? 'bg-slate-800 text-white' : 'bg-cyan-100 text-cyan-700'}>{orderTypeLabel(r.order_type)}</Badge> },
     { key: 'customer_po_no', label: 'PO No', render: (r) => <span className="font-mono text-xs">{r.customer_po_no || '—'}</span> },
     { key: 'order_date', label: 'Order Date' },
     { key: 'lines', label: 'Lines', render: (r) => <Badge className="bg-slate-100 text-slate-600">{r.lines?.length || 0}</Badge> },
@@ -216,7 +249,7 @@ export default function Orders() {
 
   const lineDetailCols = [
     { key: 'product', label: 'Product', render: (r) => <span className="font-medium">{r.product?.model || r.description || '—'}</span> },
-    { key: 'item_code', label: 'Item Code', render: (r) => <span className="font-mono text-xs">{r.product?.item_code || '—'}</span> },
+    { key: 'item_code', label: 'Item Code', render: (r) => <span className="font-mono text-xs">{r.item_code || r.product?.item_code || '—'}</span> },
     { key: 'quantity', label: 'Ordered Qty', render: (r) => fmtNum(r.quantity) },
     { key: 'dispatched_qty', label: 'Dispatched', render: (r) => r.dispatched_qty > 0 ? fmtNum(r.dispatched_qty) : '—' },
     { key: 'balance_qty', label: 'Balance', render: (r) => r.dispatched_qty > 0 ? <span className={r.balance_qty < 0 ? 'text-red-600 font-semibold' : ''}>{fmtNum(r.balance_qty)}</span> : '—' },
@@ -228,7 +261,7 @@ export default function Orders() {
     { key: 'readiness', label: 'Fulfilment', render: (r) => <FlowBadge status={r.readiness || r.fulfilment} /> },
     { key: 'source_type', label: 'Source Type', render: (r) => <Badge className="bg-gray-100 text-gray-600">{r.product?.source_type || '—'}</Badge> },
     { key: 'edit', label: '', render: (r) => (
-      <button onClick={() => { setEditLine(r); setLineForm({ id: r.id, product_id: r.product?.id || null, description: r.description || '', quantity: r.quantity, unit_price: r.unit_price, less: r.less ?? '', amount: r.amount, customer_po_no: r.customer_po_no || '' }) }} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="Edit line"><Pencil size={14} /></button>
+      <button onClick={() => { setEditLine(r); setLineForm({ id: r.id, product_id: r.product?.id || null, description: r.description || '', item_code: r.item_code || r.product?.item_code || '', quantity: r.quantity, unit_price: r.unit_price, less: r.less ?? '', amount: r.amount, customer_po_no: r.customer_po_no || '' }) }} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="Edit line"><Pencil size={14} /></button>
     )},
   ]
 
@@ -237,7 +270,7 @@ export default function Orders() {
 
   return (
     <div className="animate-fade-in-up">
-      <PageHeader title="Orders" subtitle="OEM / Trading order management"
+      <PageHeader title="Orders" subtitle="Manufacture / Trading order management"
         actions={<button onClick={openCreate} className="btn btn-primary"><Plus size={15} /> New Order</button>} />
 
       {success && (
@@ -279,7 +312,7 @@ export default function Orders() {
       </Card>
 
       {/* Order detail modal */}
-      <Modal open={!!detailLoading || !!detail} title={detail ? `${detail.order_no} — ${detail.order_type}` : 'Loading…'} onClose={() => { setDetail(null); setDetailLoading(false) }} wide
+      <Modal open={!!detailLoading || !!detail} title={detail ? `${detail.order_no} — ${orderTypeLabel(detail.order_type)}` : 'Loading…'} onClose={() => { setDetail(null); setDetailLoading(false) }} wide
         footer={<>
           <button onClick={() => { setDetail(null); setDetailLoading(false) }} className="btn btn-secondary">Close</button>
           <button onClick={() => removeOrder(detail)} className="btn btn-danger">Delete Order</button>
@@ -293,9 +326,11 @@ export default function Orders() {
                 ? <FlowBadge status="READY_FOR_DISPATCH" />
                 : <FlowBadge status={detail.stock_status || 'MANUAL_DECISION_REQUIRED'} />}</div>
               <div><span className="text-slate-500">Order Date:</span> <span className="font-medium">{detail.order_date}</span></div>
+              <div><span className="text-slate-500">SO No:</span> <span className="font-mono text-xs">{detail.order_no || '—'}</span>
+                <button onClick={() => setSoPoForm({ order_no: detail.order_no || '', customer_po_no: detail.customer_po_no || '' })} className="ml-2 text-blue-500 hover:text-blue-700 p-1 align-middle" title="Edit SO / PO number"><Pencil size={13} /></button></div>
               <div><span className="text-slate-500">PO No:</span> <span className="font-mono text-xs">{detail.customer_po_no || '—'}</span></div>
               <div><span className="text-slate-500">Salesperson:</span> {detail.salesperson?.name || '—'}</div>
-              <div><span className="text-slate-500">Order Type:</span> <Badge className="bg-slate-100 text-slate-600">{detail.order_type}</Badge></div>
+              <div><span className="text-slate-500">Order Type:</span> <Badge className="bg-slate-100 text-slate-600">{orderTypeLabel(detail.order_type)}</Badge></div>
               <div><span className="text-slate-500">Dispatched (order-level):</span> <span className="font-semibold">{fmtNum(detail.dispatch_qty)}</span></div>
               <div><span className="text-slate-500">Value:</span> <span className="font-medium">{fmtNum(detail.total_value)}</span></div>
             </div>
@@ -322,15 +357,21 @@ export default function Orders() {
               value={lineForm.product_id ?? null}
               initialLabel={!lineForm.product_id ? (lineForm.description || '') : ''}
               placeholder="Type to search products or keep the manual description"
-              onChange={(id, manual) => setLineForm((lf) => ({
-                ...lf,
-                product_id: id,
-                description: manual || lf.description,
-              }))}
+              onChange={(id, manual) => setLineForm((lf) => {
+                const p = products.find((x) => String(x.id) === String(id))
+                return {
+                  ...lf,
+                  product_id: id,
+                  description: manual || lf.description,
+                  item_code: id ? (p?.item_code || lf.item_code || '') : lf.item_code,
+                }
+              })}
             />
           </div>
-          <div className="sm:col-span-2"><label className="block text-slate-500 text-xs mb-1">Description</label>
+          <div><label className="block text-slate-500 text-xs mb-1">Description</label>
             <input value={lineForm.description || ''} onChange={(e) => setLineForm({ ...lineForm, description: e.target.value })} className="input" /></div>
+          <div><label className="block text-slate-500 text-xs mb-1">Item Code</label>
+            <input value={lineForm.item_code || ''} onChange={(e) => setLineForm({ ...lineForm, item_code: e.target.value })} placeholder="Item code" className="input" /></div>
           <div><label className="block text-slate-500 text-xs mb-1">Customer PO No</label>
             <input value={lineForm.customer_po_no || ''} onChange={(e) => setLineForm({ ...lineForm, customer_po_no: e.target.value })} className="input" /></div>
           <div><label className="block text-slate-500 text-xs mb-1">Quantity</label>
@@ -366,7 +407,7 @@ export default function Orders() {
           <div>
             <label className="block text-slate-500 text-xs mb-1">Order Type</label>
             <select value={form.order_type || 'OEM'} onChange={(e) => setForm({ ...form, order_type: e.target.value })} className="input">
-              {ORDER_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              {ORDER_TYPE_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
           </div>
           <div>
@@ -374,15 +415,23 @@ export default function Orders() {
             <input type="date" value={form.order_date || ''} onChange={(e) => setForm({ ...form, order_date: e.target.value })} className="input" />
           </div>
           <div>
+            <label className="block text-slate-500 text-xs mb-1">SO Number <span className="text-red-500">*</span> <span className="text-slate-400 font-normal">(manual)</span></label>
+            <input value={form.order_no || ''} onChange={(e) => setForm({ ...form, order_no: e.target.value })} placeholder="Enter the actual Sales Order no." className="input" />
+            {createErrors.order_no && <p className="text-xs text-red-600 mt-1">{createErrors.order_no}</p>}
+          </div>
+          <div>
             <label className="block text-slate-500 text-xs mb-1">Customer PO No</label>
             <input value={form.customer_po_no || ''} onChange={(e) => setForm({ ...form, customer_po_no: e.target.value })} placeholder="PO / reference no" className="input" />
           </div>
           <div>
             <label className="block text-slate-500 text-xs mb-1">Salesperson</label>
-            <select value={form.salesperson_id ?? ''} onChange={(e) => setForm({ ...form, salesperson_id: e.target.value ? Number(e.target.value) : null })} className="input">
-              <option value="">None</option>
-              {salespersons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+            <SearchSelect
+              options={salespersons.map((s) => ({ id: s.id, label: s.name }))}
+              value={form.salesperson_id}
+              initialLabel={!form.salesperson_id ? (form.salesperson_name || '') : ''}
+              placeholder="Type a salesperson name or select…"
+              onChange={(id, manual) => setForm((f) => ({ ...f, salesperson_id: id, salesperson_name: manual }))}
+            />
           </div>
 
           {/* Order lines */}
@@ -394,8 +443,9 @@ export default function Orders() {
 
             {(form.lines || []).map((l, i) => {
               return (
-                <div key={i} className="grid grid-cols-1 sm:grid-cols-12 gap-2 mb-3 p-3 rounded-lg bg-slate-50/70 border border-gray-100">
-                  <div className="sm:col-span-5">
+                <div key={i} className="relative grid grid-cols-2 sm:grid-cols-12 gap-2 mb-3 p-3 rounded-lg bg-slate-50/70 border border-gray-100">
+                  <button onClick={() => removeLine(i)} className="absolute top-2 right-2 text-red-400 hover:text-red-600 p-1 hover:bg-red-50 rounded" title="Remove item"><X size={14} /></button>
+                  <div className="col-span-2 sm:col-span-4">
                     <label className="block text-slate-500 text-[0.6875rem] mb-1">Product <span className="text-red-500">*</span> <span className="text-slate-400 font-normal">(or type manual)</span></label>
                     <SearchSelect
                       options={products.map((p) => ({ id: p.id, label: `${p.model}${p.item_code ? ` (${p.item_code})` : ''} · ${p.uom || 'Each'}` }))}
@@ -406,25 +456,26 @@ export default function Orders() {
                     />
                     {createErrors[`line_${i}_product`] && <p className="text-xs text-red-600 mt-1">{createErrors[`line_${i}_product`]}</p>}
                   </div>
-                  <div className="sm:col-span-3">
+                  <div className="col-span-2 sm:col-span-3">
+                    <label className="block text-slate-500 text-[0.6875rem] mb-1">Item Code</label>
+                    <input type="text" value={l.item_code || ''} onChange={(e) => updateLine(i, 'item_code', e.target.value)} placeholder="Item code" className="input py-1.5" />
+                  </div>
+                  <div className="col-span-2 sm:col-span-5">
                     <label className="block text-slate-500 text-[0.6875rem] mb-1">Items / Description</label>
                     <input value={l.description || ''} onChange={(e) => updateLine(i, 'description', e.target.value)} placeholder="Description" className="input py-1.5" />
                   </div>
-                  <div className="sm:col-span-1">
+                  <div className="col-span-1 sm:col-span-4">
                     <label className="block text-slate-500 text-[0.6875rem] mb-1">Qty <span className="text-red-500">*</span></label>
                     <input type="number" min="1" step="any" value={l.quantity ?? ''} onChange={(e) => updateLine(i, 'quantity', e.target.value)} className="input py-1.5" />
                     {createErrors[`line_${i}_qty`] && <p className="text-xs text-red-600 mt-1">{createErrors[`line_${i}_qty`]}</p>}
                   </div>
-                  <div className="sm:col-span-1">
+                  <div className="col-span-1 sm:col-span-4">
                     <label className="block text-slate-500 text-[0.6875rem] mb-1">Rate</label>
                     <input type="number" min="0" step="any" value={l.unit_price ?? ''} onChange={(e) => updateLine(i, 'unit_price', e.target.value)} placeholder="0" className="input py-1.5" />
                   </div>
-                  <div className="sm:col-span-1">
+                  <div className="col-span-1 sm:col-span-4">
                     <label className="block text-slate-500 text-[0.6875rem] mb-1">Amount</label>
-                    <div className="input py-1.5 bg-white text-right font-mono text-xs text-slate-800">{fmtNum(lineTotal(l))}</div>
-                  </div>
-                  <div className="sm:col-span-1 flex items-end justify-end pb-0.5">
-                    <button onClick={() => removeLine(i)} className="text-red-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded" title="Remove item"><X size={14} /></button>
+                    <div className="input input-num py-1.5 bg-white text-right font-mono text-slate-800 whitespace-nowrap overflow-hidden text-ellipsis">{fmtNum(lineTotal(l))}</div>
                   </div>
                 </div>
               )
@@ -445,6 +496,25 @@ export default function Orders() {
             <label className="block text-slate-500 text-xs mb-1">Notes / Remarks</label>
             <textarea value={form.remarks || ''} onChange={(e) => setForm({ ...form, remarks: e.target.value })} rows={2} className="input" />
           </div>
+        </div>
+      </Modal>
+
+      {/* Edit SO / PO number modal */}
+      <Modal open={!!soPoForm} title="Edit SO / PO Number" onClose={() => setSoPoForm(null)} wide
+        footer={<>
+          <button onClick={() => setSoPoForm(null)} className="btn btn-secondary">Cancel</button>
+          <button onClick={saveSoPo} className="btn btn-primary">Save</button>
+        </>}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+          <div>
+            <label className="block text-slate-500 text-xs mb-1">SO Number <span className="text-red-500">*</span></label>
+            <input value={soPoForm?.order_no || ''} onChange={(e) => setSoPoForm((f) => ({ ...f, order_no: e.target.value }))} placeholder="Actual Sales Order no." className="input" />
+          </div>
+          <div>
+            <label className="block text-slate-500 text-xs mb-1">Customer PO No</label>
+            <input value={soPoForm?.customer_po_no || ''} onChange={(e) => setSoPoForm((f) => ({ ...f, customer_po_no: e.target.value }))} placeholder="PO / reference no" className="input" />
+          </div>
+          <div className="sm:col-span-2 text-xs text-slate-500">The exact numbers you enter are saved as-is. No number is auto-generated.</div>
         </div>
       </Modal>
     </div>
