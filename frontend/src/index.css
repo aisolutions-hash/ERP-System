@@ -472,6 +472,10 @@ input[type='number'],
 @media (min-width: 640px) {
   .modal-panel { width: 560px; }
   .modal-panel.modal-wide { width: 760px; }
+  .modal-panel.modal-xwide { width: min(1240px, calc(100vw - 40px)); }
+}
+@media (min-width: 640px) and (max-width: 1339px) {
+  .modal-panel.modal-xwide { width: calc(100vw - 40px); }
 }
 @media (max-width: 639px) {
   .modal-overlay { padding: 0; }

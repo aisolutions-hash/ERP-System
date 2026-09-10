@@ -51,7 +51,7 @@ export function StatCard({ label, value, sub, icon: Icon, iconClass = 'bg-amber-
   )
 }
 
-export function Modal({ open, title, subtitle, onClose, children, wide = false, footer }) {
+export function Modal({ open, title, subtitle, onClose, children, wide = false, xwide = false, footer }) {
   const [visible, setVisible] = useState(false)
   const onCloseRef = useRef(onClose)
   const openRef = useRef(open)
@@ -83,7 +83,7 @@ export function Modal({ open, title, subtitle, onClose, children, wide = false, 
   return createPortal(
     <div className="modal-overlay" onClick={onClose}>
       <div
-        className={`modal-panel ${wide ? 'modal-wide' : ''}`}
+        className={`modal-panel ${wide ? 'modal-wide' : ''} ${xwide ? 'modal-xwide' : ''}`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

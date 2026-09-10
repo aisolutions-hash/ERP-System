@@ -15,7 +15,18 @@ const TABS = [
 
 const today = () => new Date().toISOString().slice(0, 10)
 
-const blankLine = () => ({ product_id: '', item_code: '', description: '', quantity: '', dispatch_date: today(), rate: '', weight: '', sales_order_line_id: null })
+const blankLine = () => ({ product_id: '', item_code: '', description: '', quantity: '', dispatch_date: today(), rate: '', weight: '', sales_order_line_id: null, schedule_qty: '' })
+
+const orderLinesToLines = (order) => (order?.lines || []).map((ln) => ({
+  product_id: ln.product_id ?? '',
+  item_code: ln.item_code || ln.product?.item_code || '',
+  description: ln.description || ln.product?.model || '',
+  quantity: ln.quantity ?? '',
+  dispatch_date: today(),
+  rate: '', weight: '',
+  sales_order_line_id: ln.id ?? null,
+  schedule_qty: ln.quantity ?? '',
+}))
 
 export default function Dispatch() {
   const [tab, setTab] = useState('dispatches')
@@ -794,7 +805,7 @@ export default function Dispatch() {
 
       {/* ==================== NEW / EDIT DISPATCH MODAL ==================== */}
       {showDispForm && dispForm && (
-        <Modal open title={dispForm.id ? `Edit Dispatch ${dispForm.dispatch_no}` : 'New Dispatch'} onClose={() => setShowDispForm(false)} wide
+        <Modal open title={dispForm.id ? `Edit Dispatch ${dispForm.dispatch_no}` : 'New Dispatch'} onClose={() => setShowDispForm(false)} xwide
           footer={<>
             <button onClick={() => setShowDispForm(false)} className="btn btn-secondary">Cancel</button>
             <button onClick={saveDispForm} className="btn btn-primary">{dispForm.id ? 'Save Changes' : 'Create Dispatch'}</button>
@@ -813,10 +824,13 @@ export default function Dispatch() {
               <select value={dispForm.sales_order_id ?? ''} onChange={(e) => {
                 const id = e.target.value ? Number(e.target.value) : null
                 const o = id ? orderOf(id) : null
-                setDispForm((f) => ({ ...f, sales_order_id: id,
+                setDispForm((f) => ({
+                  ...f, sales_order_id: id,
                   customer_id: f.customer_id || o?.customer_id || null,
                   customer_name: (!f.customer_id && o?.customer?.name) || f.customer_name || '',
-                  schedule_qty: f.schedule_qty || o?.lines?.reduce((s, l) => s + (l.quantity || 0), 0) || 0 }) )
+                  schedule_qty: f.schedule_qty || o?.lines?.reduce((s, l) => s + (l.quantity || 0), 0) || 0,
+                  lines: (id && o && !f.id) ? orderLinesToLines(o) : f.lines,
+                }))
               }} className="input">
                 <option value="">No order (manual dispatch)</option>
                 {orders.map((o) => <option key={o.id} value={o.id}>{o.order_no} — {o.customer?.name || o.customer_name}</option>)}
@@ -845,11 +859,15 @@ export default function Dispatch() {
               <div className="mb-1 text-xs font-medium text-slate-500 uppercase">Initial Dispatch Entries <span className="text-slate-400">(optional, date-wise)</span></div>
               {dispForm.lines.length > 0 && (
                 <div className="hidden sm:grid grid-cols-12 gap-2 items-center text-[10px] uppercase tracking-wide text-slate-400 mb-1 px-1">
-                  <div className="col-span-4">Product / Manual Item</div>
-                  <div className="col-span-2">Item Code</div>
-                  <div className="col-span-2">Qty</div>
-                  <div className="col-span-2">Date</div>
-                  <div className="col-span-2"><div className="flex gap-2"><span className="flex-1">Rate</span><span className="flex-1">Wt</span></div></div>
+                  <div className="col-span-2">Product / Manual Item</div>
+                  <div className="col-span-1">Item Code</div>
+                  <div className="col-span-3">Description / Model</div>
+                  <div className="col-span-1">Schedule</div>
+                  <div className="col-span-1">Dispatch Qty</div>
+                  <div className="col-span-1">Date</div>
+                  <div className="col-span-1">Rate</div>
+                  <div className="col-span-1">Wt</div>
+                  <div className="col-span-1" />
                 </div>
               )}
               <div className="space-y-2">
@@ -860,17 +878,17 @@ export default function Dispatch() {
                       value={ln.product_id || null}
                       initialLabel={!ln.product_id ? (ln.description || '') : ''}
                       placeholder="Product or manual item…"
-                      className="input col-span-4 py-1.5"
+                      className="input col-span-2 py-1.5"
                       onChange={(id, manual) => setDLineProduct(i, id || '', manual)}
                     />
-                    <input value={ln.item_code ?? ''} onChange={(e) => setDLine(i, 'item_code', e.target.value)} placeholder="e.g. LAP-001" className="input col-span-2 py-1.5" />
-                    <input value={ln.quantity ?? ''} type="number" onChange={(e) => setDLine(i, 'quantity', e.target.value)} placeholder="Qty" className="input col-span-2 py-1.5" />
-                    <input type="date" value={ln.dispatch_date} onChange={(e) => setDLine(i, 'dispatch_date', e.target.value)} className="input col-span-2 py-1.5" />
-                    <div className="col-span-2 flex gap-2">
-                      <input value={ln.rate ?? ''} type="number" onChange={(e) => setDLine(i, 'rate', e.target.value)} placeholder="Rate" className="input flex-1 py-1.5" />
-                      <input value={ln.weight ?? ''} type="number" onChange={(e) => setDLine(i, 'weight', e.target.value)} placeholder="Wt" className="input flex-1 py-1.5" />
-                    </div>
-                    <button onClick={() => { if (dispForm.lines.length > 1) setDispForm({ ...dispForm, lines: dispForm.lines.filter((_, j) => j !== i) }) }} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
+                    <input value={ln.item_code ?? ''} onChange={(e) => setDLine(i, 'item_code', e.target.value)} placeholder="e.g. LAP-001" className="input col-span-1 py-1.5" />
+                    <input value={ln.description ?? ''} onChange={(e) => setDLine(i, 'description', e.target.value)} placeholder="Model / description" className="input col-span-3 py-1.5" />
+                    <span className="col-span-1 text-center font-medium text-slate-600 truncate">{ln.schedule_qty != null && ln.schedule_qty !== '' ? fmtNum(ln.schedule_qty) : '—'}</span>
+                    <input value={ln.quantity ?? ''} type="number" onChange={(e) => setDLine(i, 'quantity', e.target.value)} placeholder="Qty" className="input col-span-1 py-1.5 px-1.5" />
+                    <input type="date" value={ln.dispatch_date} onChange={(e) => setDLine(i, 'dispatch_date', e.target.value)} className="input col-span-1 py-1.5 px-1.5" />
+                    <input value={ln.rate ?? ''} type="number" onChange={(e) => setDLine(i, 'rate', e.target.value)} placeholder="Rate" className="input col-span-1 py-1.5 px-1.5" />
+                    <input value={ln.weight ?? ''} type="number" onChange={(e) => setDLine(i, 'weight', e.target.value)} placeholder="Wt" className="input col-span-1 py-1.5 px-1.5" />
+                    <button onClick={() => { if (dispForm.lines.length > 1) setDispForm({ ...dispForm, lines: dispForm.lines.filter((_, j) => j !== i) }) }} className="text-red-400 hover:text-red-600 col-span-1 justify-self-end"><Trash2 size={14} /></button>
                   </div>
                 ))}
               </div>
