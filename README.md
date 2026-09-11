@@ -341,7 +341,7 @@ Then run **only the backend** and open http://127.0.0.1:8000 — it serves both 
 
 | Role | Username | Password |
 |------|----------|----------|
-| Admin | `admin` | `admin123` |
+| Admin | `admin` | `password` |
 
 Create additional users with different roles via the **Users** page (admin only).
 
