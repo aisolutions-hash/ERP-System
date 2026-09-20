@@ -10,8 +10,11 @@ Readiness = enough stock at the Dispatch location (seeded Plant named
 "Dispatch", Main Store plant_id NULL). Insufficient stock routes by order type:
 TRADING -> Purchase / Stock Required, MANUFACTURING -> Production Required.
 
-Status is always derived from actual data (ordered vs dispatched vs stock),
-never hardcoded by the UI.
+Status is user-controlled for the pre-dispatch lifecycle (New, Production
+Required, Production Completed, Ready for Dispatch, Purchase / Stock Required,
+Cancelled). Only actual dispatch events drive the order to Partially
+Dispatched / Completed; stock/state derivation is a fallback for orders that
+have not been given an explicit manual status.
 """
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -29,6 +32,7 @@ _STATUS_MAP = {
     "Stock Transfer Required": OrderStatus.confirmed,
     "Purchase / Stock Required": OrderStatus.confirmed,
     "Production Required": OrderStatus.in_production,
+    "Production In Process": OrderStatus.production_in_process,
     "Production Completed": OrderStatus.production_completed,
     "Partially Dispatched": OrderStatus.dispatched,
     "Completed": OrderStatus.completed,
@@ -40,11 +44,25 @@ _STATUS_LABEL_REVERSE = {
     OrderStatus.new: "New",
     OrderStatus.confirmed: "Purchase / Stock Required",
     OrderStatus.in_production: "Production Required",
+    OrderStatus.production_in_process: "Production In Process",
     OrderStatus.production_completed: "Production Completed",
     OrderStatus.ready: "Ready for Dispatch",
     OrderStatus.dispatched: "Partially Dispatched",
     OrderStatus.completed: "Completed",
     OrderStatus.cancelled: "Cancelled",
+}
+
+# User-controlled manual statuses. Once a user explicitly sets one of these,
+# stock/state derivation must NOT silently overwrite it; only actual dispatch
+# events (Partially Dispatched / Completed) or a user Cancelled may change it.
+_USER_CONTROLLED_STATUSES = {
+    OrderStatus.new,
+    OrderStatus.confirmed,
+    OrderStatus.in_production,
+    OrderStatus.production_in_process,
+    OrderStatus.production_completed,
+    OrderStatus.ready,
+    OrderStatus.cancelled,
 }
 
 
@@ -180,11 +198,14 @@ def friendly_status(db: Session, o: SalesOrder, dmap: tuple | None = None,
         return "Completed"
     if total > 0:
         return "Partially Dispatched"
-    # Manual gate: once the user has marked production as completed the order
-    # stays in that state until real dispatch moves it on. Production/stock
-    # changes never auto-advance it (the user stays in control).
-    if o.status == OrderStatus.production_completed:
-        return "Production Completed"
+    # Manual user-controlled statuses take precedence over stock derivation.
+    # Once a user explicitly sets a status (New, Production Required,
+    # Production Completed, Ready for Dispatch, Purchase / Stock Required,
+    # Cancelled), it is displayed as-is. Only actual dispatch events move the
+    # order to Partially Dispatched / Completed.
+    if o.status in _USER_CONTROLLED_STATUSES:
+        return _STATUS_LABEL_REVERSE.get(o.status, o.status.value)
+    # Fallback derivation for orders that have no explicit manual status yet.
     ck = ready if ready is not None else check_ready(db, o)
     if ck["ready"]:
         return "Ready for Dispatch"
@@ -213,14 +234,33 @@ def db_status_for(friendly: str) -> OrderStatus:
 
 
 def sync_local_order_status(db: Session, o: SalesOrder) -> None:
-    """Persist the derived order status (keeps cross-module status consistent).
+    """Persist the order status based on dispatch reality, respecting manual
+    user-controlled statuses.
 
-    Cancelled orders keep their status; otherwise the stored status is refreshed
-    whenever the derived status changes (avoids needless writes).
+    Rules:
+      - Cancelled orders are never touched.
+      - Fully dispatched -> Completed.
+      - Partially dispatched -> Partially Dispatched.
+      - Explicit user-controlled statuses (New, Production Required,
+        Production Completed, Ready for Dispatch, Purchase / Stock Required)
+        are preserved; stock/state derivation does NOT overwrite them.
+      - Only orders without an explicit manual status fall back to stock-based
+        derivation (legacy / default-New behaviour).
     """
     if o.status == OrderStatus.cancelled:
         return
-    derived = db_status_for(friendly_status(db, o))
+    per_line, total = dispatched_map(db, o)
+    order_qty = sum(float(l.quantity or 0) for l in o.lines)
+    if order_qty > 0 and total >= order_qty:
+        derived = OrderStatus.completed
+    elif total > 0:
+        derived = OrderStatus.dispatched
+    elif o.status in _USER_CONTROLLED_STATUSES and o.status != OrderStatus.new:
+        # Explicit manual status set by the user — do not re-derive from stock.
+        return
+    else:
+        # Default/New orders or legacy statuses fall back to stock derivation.
+        derived = db_status_for(friendly_status(db, o, (per_line, total)))
     if o.status != derived:
         o.status = derived
         db.flush()
@@ -315,7 +355,7 @@ def serialize_local_order(db: Session, o: SalesOrder) -> dict:
             "dispatch_stock": dispatch_stock,
             "main_store_stock": main_stock,
             "transfer_qty": transfer_qty,
-            "transfer_required": friendly == "Stock Transfer Required",
+            "transfer_required": transfer_qty > 0,
         },
         "dispatches": order_dispatches(db, o),
         "created_at": o.created_at,
@@ -325,6 +365,9 @@ def serialize_local_order(db: Session, o: SalesOrder) -> dict:
 def sync_local_orders_for_products(db: Session, product_ids: list) -> int:
     """Refreshes derived status of every LOCAL order that references any of the
     given products (used after stock transfers / receipts reposition stock).
+
+    Only orders without an explicit manual user-controlled status are re-derived
+    from stock; manual statuses are preserved.
 
     Returns the number of local orders whose status changed.
     """
@@ -343,6 +386,8 @@ def sync_local_orders_for_products(db: Session, product_ids: list) -> int:
     changed = 0
     for o in orders:
         if o.status == OrderStatus.cancelled:
+            continue
+        if o.status in _USER_CONTROLLED_STATUSES and o.status != OrderStatus.new:
             continue
         derived = db_status_for(friendly_status(db, o))
         if o.status != derived:

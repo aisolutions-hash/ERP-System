@@ -56,6 +56,7 @@ class OrderStatus(str, enum.Enum):
     new = "New"
     confirmed = "Confirmed"
     in_production = "In Production"
+    production_in_process = "Production In Process"
     production_completed = "Production Completed"
     ready = "Ready"
     dispatched = "Dispatched"

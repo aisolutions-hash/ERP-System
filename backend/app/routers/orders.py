@@ -25,7 +25,7 @@ from ..services.import_common import (
     build_column_map, cell_num, is_blank_row, parse_date_value, read_table, row_to_dict,
 )
 from ..services.stock_service import resolve_or_create_product
-from datetime import date
+from datetime import date, timedelta
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -250,6 +250,25 @@ def _parse_pct(value) -> float | None:
     return round(v, 4)
 
 
+def _excel_serial(d: date) -> float:
+    """Convert a date to an Excel serial day number (1899-12-30 epoch)."""
+    return (d - date(1899, 12, 30)).days
+
+
+def _parse_ask_till_date(v: Any) -> tuple[float | None, str | None]:
+    """Parse Ask Till Date as a numeric value. Supports plain numbers and
+    common date formats (stored as Excel serial to fit the Float column)."""
+    if v is None or v == "":
+        return None, None
+    num = cell_num(v)
+    if num is not None:
+        return num, None
+    parsed = parse_date_value(v)
+    if parsed:
+        return float(_excel_serial(parsed)), None
+    return None, f"Cannot parse '{v}' as a date or number"
+
+
 def _parse_order_type(value) -> OrderType:
     if value is None or value == "":
         return OrderType.trading
@@ -373,7 +392,9 @@ def _parse_import_rows(db: Session, headers: list[str], rows: list[list[Any]], f
         model = _t(mapped.get("model"))
         schedule = cell_num(mapped.get("schedule"))
         order_date = parse_date_value(mapped.get("order_date")) or date.today()
-        ask_till = cell_num(mapped.get("ask_till_date"))
+        ask_till, ask_err = _parse_ask_till_date(mapped.get("ask_till_date"))
+        if ask_err:
+            row_errs.append(ask_err)
         dispatch = cell_num(mapped.get("dispatch"))
         pct = _parse_pct(mapped.get("completion_pct"))
         balance = cell_num(mapped.get("balance_qty"))
@@ -864,6 +885,7 @@ async def preview_order_import(
         "warning_rows": preview["warning_rows"],
         "duplicate_rows": preview["duplicate_rows"],
         "mapped_columns": preview["mapped_columns"],
+        "headers": headers,
         "sample_rows": preview["sample_rows"],
         "errors": preview["errors"],
         "warnings": preview["warnings"],

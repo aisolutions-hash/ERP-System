@@ -322,12 +322,19 @@ export default function LocalOrders() {
   const openNewEntry = (order, line) => {
     // Available stock for this line = current balance at the Dispatch location.
     const sl = (order?.stock?.lines || []).find((s) => s.line_id === line?.id)
+    const availableDispatch = sl?.tracked ? (Number(sl.available_dispatch) || 0) : null
+    const availableMain = sl?.tracked ? (Number(sl.available_main) || 0) : null
+    const remaining = Number(line?.balance_qty) || 0
+    const transferRequired = (availableDispatch != null && availableMain != null)
+      ? Math.max(Math.min(remaining - availableDispatch, availableMain), 0)
+      : null
     setEntry({
       id: null, dispatch_no: '', order: order, order_line_id: line?.id ?? null,
       product_id: line?.product_id ?? null, item_code: line?.item_code || '',
       description: line?.description || line?.model || '', quantity: line ? (line.balance_qty > 0 ? line.balance_qty : '') : '',
       dispatch_date: today(), rate: line?.rate ?? '', weight: '',
-      available: sl?.tracked ? (Number(sl.available_dispatch) || 0) : null, oldQty: 0,
+      available: availableDispatch, availableMain,
+      transferRequired, oldQty: 0,
     })
     setEntryErr(null)
     setShowEntry(true)
@@ -335,13 +342,20 @@ export default function LocalOrders() {
 
   const openEditEntry = (ln) => {
     const sl = (detail?.stock?.lines || []).find((s) => s.line_id === ln.sales_order_line_id)
+    const availableDispatch = sl?.tracked ? (Number(sl.available_dispatch) || 0) : null
+    const availableMain = sl?.tracked ? (Number(sl.available_main) || 0) : null
+    const remaining = Number(ln.quantity) || 0
+    const transferRequired = (availableDispatch != null && availableMain != null)
+      ? Math.max(Math.min(remaining - availableDispatch, availableMain), 0)
+      : null
     setEntry({
       id: null, entry_line_id: ln.entry_line_id, dispatch_no: ln.dispatch_no, order: detail,
       order_line_id: ln.sales_order_line_id ?? null,
       product_id: ln.product_id ?? null, item_code: ln.item_code || '',
       description: ln.description || '', quantity: ln.quantity ?? '',
       dispatch_date: ln.dispatch_date || today(), rate: ln.rate ?? '', weight: ln.weight ?? '',
-      available: sl?.tracked ? (Number(sl.available_dispatch) || 0) : null, oldQty: Number(ln.quantity) || 0,
+      available: availableDispatch, availableMain,
+      transferRequired, oldQty: Number(ln.quantity) || 0,
     })
     setEntryErr(null)
     setShowEntry(true)
@@ -403,7 +417,8 @@ export default function LocalOrders() {
   const transferForOrder = (o) => {
     const lines = (o.lines || []).map((ln, i) => {
       const s = (o.stock?.lines || [])[i] || {}
-      const need = Math.max((Number(ln.balance_qty) || 0) - (Number(s.available_dispatch) || 0), 0)
+      const gap = Math.max((Number(ln.balance_qty) || 0) - (Number(s.available_dispatch) || 0), 0)
+      const need = Math.min(gap, Number(s.available_main) || 0)
       return { product_id: ln.product_id, item_code: ln.item_code || '', description: ln.description || ln.model || '', quantity: need }
     }).filter((l) => l.product_id && l.quantity > 0)
     setTransferInit({
@@ -752,6 +767,7 @@ export default function LocalOrders() {
               <select value={form.status || 'New'} onChange={(e) => setForm({ ...form, status: e.target.value })} className="input">
                 <option value="New">New</option>
                 <option value="In Production">Production Required</option>
+                <option value="Production In Process">Production In Process</option>
                 <option value="Production Completed">Production Completed</option>
                 <option value="Ready">Ready for Dispatch</option>
                 <option value="Confirmed">Purchase / Stock Required</option>
@@ -860,6 +876,17 @@ export default function LocalOrders() {
               {entryRemaining > 0
                 ? <span>Schedule <b>{fmtNum(Number(entryLine.quantity) || 0)}</b> · Dispatched <b>{fmtNum(Number(entryLine.dispatched_qty) || 0)}</b> · <b>Remaining to Dispatch: {fmtNum(entryRemaining)}</b></span>
                 : <span>Order line fully dispatched — Balance 0. This order will be marked <b>Completed</b>.</span>}
+            </div>
+          )}
+          {(entry.available != null || entry.availableMain != null) && (
+            <div className="mb-3 rounded-lg px-3 py-2 text-xs border bg-slate-50 border-slate-200">
+              <div className="flex items-center gap-4 flex-wrap">
+                <span>Available at Dispatch: <b className={entry.available > 0 ? 'text-slate-800' : 'text-red-600'}>{fmtNum(entry.available || 0)}</b></span>
+                <span>Main Store: <b className="text-slate-800">{fmtNum(entry.availableMain || 0)}</b></span>
+                {entry.transferRequired > 0 && (
+                  <span className="text-amber-700 font-medium">Transfer Required: {fmtNum(entry.transferRequired)}</span>
+                )}
+              </div>
             </div>
           )}
           <div className="grid grid-cols-2 gap-3 text-sm mb-3">
