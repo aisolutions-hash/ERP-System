@@ -469,6 +469,7 @@ class ProductionOrderCreate(BaseModel):
     customer_id: Optional[int] = None
     customer_name: str = ""
     status: ProductionStatus = ProductionStatus.planned
+    category: str = "Manufacturing"
     start_date: Optional[date] = None
     completion_date: Optional[date] = None
     report_date: date = Field(default_factory=date.today)

@@ -9,15 +9,16 @@ from ..auth import CurrentUser, AllStaff, ManagerOrAdmin
 from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
 from ..models import (
-    Customer, MovementType, Plant, Product, ProductionMovement, ProductionOrder,
-    ProductionStatus, StockMovement, Plan, PlanType,
+    Customer, MovementType, Plant, Product, ProductCategory, ProductionMovement, ProductionOrder,
+    ProductionStatus, StockMovement, Plan, PlanType, ProductSourceType,
 )
 from ..schemas import ProductionOrderCreate, ProductionOrderOut, ProductionOrderUpdate
 from ..services.business import sync_purchase_shortages
 from ..services.customers import get_or_create_customer
 from ..services.reorder_alerts import refresh_reorder_alert
 from ..services.stock_service import (
-    apply_movement, reconvert_document, resolve_or_create_product, reverse_and_remove_ref,
+    apply_movement, reconvert_document, reverse_and_remove_ref,
+    _unique_blank_model,
 )
 from ..services.import_common import (
     build_column_map, cell_num, cell_text, is_blank_row, parse_date_value,
@@ -51,7 +52,8 @@ def _serialize_po(db: Session, o: ProductionOrder) -> dict:
         "status": o.status.value, "start_date": o.start_date, "completion_date": o.completion_date,
         "report_date": o.report_date, "remarks": o.remarks,
         "product": {"id": product.id, "model": product.model, "item_code": product.item_code,
-                    "name": product.name, "category": product.category.value} if product else None,
+                    "name": product.name, "category": product.category.value,
+                    "source_type": product.source_type.value if product.source_type else None} if product else None,
         "customer": {"id": customer.id, "name": customer.name} if customer else None,
         "movements": [{"id": m.id, "production_order_id": m.production_order_id,
                        "quantity": m.quantity, "production_date": m.production_date} for m in o.movements],
@@ -127,8 +129,9 @@ def create_production(body: ProductionOrderCreate, db: Annotated[Session, Depend
         get_or_404(db, Product, body.product_id)
         product_id = body.product_id
     else:
-        prod = resolve_or_create_product(
-            db, body.item_code, (body.model or body.item_code or "").strip(), allow_blank=True,
+        prod = _resolve_production_product(
+            db, body.item_code, (body.model or body.item_code or "").strip(),
+            category=body.category or "Manufacturing",
         )
         if prod is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -369,6 +372,7 @@ _PRODUCTION_IMPORT_ALIASES = {
     "completion_pct": ["% Comp", "% COMP", "Completion %", "Completion Percent", "% Completion", "Completion Percentage"],
     "balance_qty": ["Balance Qty", "BALANCE QTY", "Balance Quantity"],
     "status": ["Status", "STATUS"],
+    "category": ["Category", "CATEGORY", "Type", "Product Type", "Source Type", "Source"],
     "remarks": ["Remarks", "REMARKS", "Notes", "Note", "Comments"],
 }
 
@@ -483,6 +487,10 @@ def _parse_production_import(headers: list[str], rows: list[list[Any]]) -> tuple
             row_errors.append(status_err)
         row_data["status"] = status_value
 
+        # Category: optional, defaults to Manufacturing.
+        cat_raw = cell_text(mapped.get("category")) or "Manufacturing"
+        row_data["category"] = cat_raw
+
         # Remarks: optional text.
         row_data["remarks"] = cell_text(mapped.get("remarks")) or None
 
@@ -492,12 +500,56 @@ def _parse_production_import(headers: list[str], rows: list[list[Any]]) -> tuple
                 "errors": row_errors,
                 "data": {k: v for k, v in row_data.items() if k in (
                     "item_code", "model", "customer", "schedule_qty", "ask_till_date",
-                    "produced_qty", "completion_pct", "balance_qty", "status", "remarks")},
+                    "produced_qty", "completion_pct", "balance_qty", "status", "category", "remarks")},
             })
         else:
             valid_rows.append(row_data)
 
     return valid_rows, error_rows
+
+
+def _resolve_production_product(
+    db: Session, item_code: str, model: str, category: str = "Manufacturing"
+) -> Product | None:
+    """Resolve or create a product for a production plan/import.
+
+    Existing products are always reused unchanged. New products are classified
+    according to the chosen plan category:
+      - Manufacturing -> category=finished, source_type=MANUFACTURED
+      - Trading       -> category=trading,  source_type=TRADING
+    """
+    ic = (item_code or "").strip()
+    md = (model or "").strip()
+    if not ic and not md:
+        return None
+
+    # Reuse existing product by item code or model.
+    if ic:
+        existing = db.scalars(select(Product).where(Product.item_code == ic).limit(1)).first()
+        if existing:
+            return existing
+    if md:
+        existing = db.scalars(select(Product).where(Product.model == md).limit(1)).first()
+        if existing:
+            return existing
+
+    # No match — create with the selected production category.
+    is_trading = category.strip().lower() in ("trading", "trade", "trading goods")
+    if not ic:
+        md = _unique_blank_model(db, md)
+    name = md or ic
+    prod = Product(
+        item_code=ic,
+        model=md or name,
+        name=name,
+        category=ProductCategory.trading if is_trading else ProductCategory.finished,
+        source_type=ProductSourceType.trading if is_trading else ProductSourceType.manufactured,
+        uom="Each",
+        is_active=True,
+    )
+    db.add(prod)
+    db.flush()
+    return prod
 
 
 def _resolve_import_entities(db: Session, rows: list[dict]) -> list[dict]:
@@ -506,9 +558,8 @@ def _resolve_import_entities(db: Session, rows: list[dict]) -> list[dict]:
     for r in rows:
         item_code = r.get("item_code") or ""
         model = r.get("model") or ""
-        prod = resolve_or_create_product(
-            db, item_code, model, allow_blank=True,
-        )
+        category = r.get("category") or "Manufacturing"
+        prod = _resolve_production_product(db, item_code, model, category)
         r["product_id"] = prod.id if prod else None
         r["product_model"] = prod.model if prod else (model or None)
 

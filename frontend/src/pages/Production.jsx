@@ -171,6 +171,11 @@ export default function Production() {
   }
 
   // ---- production order (schedule + date-wise actual) -----------------------
+  const planCategory = (product) => {
+    if (!product) return 'Manufacturing'
+    return product.category === 'trading' ? 'Trading' : 'Manufacturing'
+  }
+
   const saveProduction = async () => {
     try {
       const askTill = prodForm.ask_till_date === '' || prodForm.ask_till_date == null
@@ -199,6 +204,7 @@ export default function Production() {
           report_date: prodForm.report_date || undefined,
           remarks: prodForm.remarks || '',
           status: 'Planned',
+          category: prodForm.category || 'Manufacturing',
         })
         const qty = Number(prodForm.produced_qty || 0)
         if (qty > 0) {
@@ -294,6 +300,10 @@ export default function Production() {
   const productionCols = [
     { key: 'item_code', label: 'Item Code', render: (r) => <span className="font-mono text-xs">{r.product?.item_code || '—'}</span> },
     { key: 'model', label: 'Model', render: (r) => <span className="font-medium">{r.product?.model || '—'}</span> },
+    { key: 'category', label: 'Category', render: (r) => {
+      const isTrading = r.product?.category === 'trading'
+      return <Badge className={isTrading ? 'bg-cyan-100 text-cyan-700' : 'bg-blue-100 text-blue-700'}>{isTrading ? 'Trading' : 'Manufacturing'}</Badge>
+    }},
     { key: 'customer', label: 'Customer', render: (r) => <span className="font-medium">{r.customer?.name || '—'}</span> },
     { key: 'schedule_qty', label: 'Schedule', render: (r) => <span className="font-semibold tabular-nums">{fmtNum(r.schedule_qty)}</span> },
     { key: 'ask_till_date', label: 'Ask Till Date', render: (r) => <span className="tabular-nums">{r.ask_till_date != null ? fmtNum(r.ask_till_date) : '—'}</span> },
@@ -310,6 +320,7 @@ export default function Production() {
             ask_till_date: r.ask_till_date, customer_id: r.customer_id,
             customer_name: r.customer?.name || '', section: r.section,
             report_date: r.report_date, remarks: r.remarks, status: r.status,
+            category: planCategory(r.product),
           })
           setShowProdForm(true)
         }} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="Edit"><Pencil size={15} /></button>
@@ -389,7 +400,7 @@ export default function Production() {
               <div className="flex items-center gap-2 flex-wrap">
                 <button onClick={() => downloadFile('/production/import/template', 'production_plan_template.csv')} className="btn btn-secondary"><Download size={15} /> Template</button>
                 <button onClick={() => { setImportFile(null); setImportPreview(null); setImportResult(null); setImportError(null); setShowImport(true) }} className="btn btn-secondary"><Upload size={15} /> Import Production Plan</button>
-                <button onClick={() => { setProdForm({}); setShowProdForm(true) }} className="btn btn-primary"><Plus size={15} /> New Plan</button>
+                <button onClick={() => { setProdForm({ category: 'Manufacturing' }); setShowProdForm(true) }} className="btn btn-primary"><Plus size={15} /> New Plan</button>
               </div>
             }>
             {loading ? <Loading /> : productionOrders.length === 0
@@ -516,11 +527,32 @@ export default function Production() {
                 initialLabel={!prodForm.product_id ? (prodForm.model || '') : ''}
                 placeholder="Type to search or enter a model"
                 onChange={(id, manual) => {
-                  if (id) { const mm = products.find((p) => p.id === id); setProdForm((f) => ({ ...f, product_id: id, model: mm?.model || '', item_code: f.item_code || mm?.item_code || '' })) }
-                  else setProdForm((f) => ({ ...f, product_id: null, model: manual }))
+                  if (id) {
+                    const mm = products.find((p) => p.id === id)
+                    setProdForm((f) => ({
+                      ...f,
+                      product_id: id,
+                      model: mm?.model || '',
+                      item_code: f.item_code || mm?.item_code || '',
+                      category: planCategory(mm),
+                    }))
+                  } else {
+                    setProdForm((f) => ({ ...f, product_id: null, model: manual, category: f.category || 'Manufacturing' }))
+                  }
                 }}
               />
             )}</div>
+          <div><label className="block text-slate-500 text-xs mb-1">Category <span className="text-red-500">*</span></label>
+            <select
+              value={prodForm.category || 'Manufacturing'}
+              disabled={!!prodForm.id || !!prodForm.product_id}
+              onChange={(e) => setProdForm({ ...prodForm, category: e.target.value })}
+              className="input disabled:bg-slate-50 disabled:text-slate-500"
+            >
+              <option value="Manufacturing">Manufacturing</option>
+              <option value="Trading">Trading</option>
+            </select>
+          </div>
           <div><label className="block text-slate-500 text-xs mb-1">Schedule Quantity</label>
             <input type="number" min="0" value={prodForm.schedule_qty ?? ''} onChange={(e) => setProdForm({ ...prodForm, schedule_qty: e.target.value })} className="input" /></div>
           <div><label className="block text-slate-500 text-xs mb-1">Ask Till Date</label>
