@@ -58,8 +58,19 @@ def _serialize_po(db: Session, po: PurchaseOrder) -> dict:
     }
 
 
+def _line_total(ln: PurchaseOrderLine) -> float:
+    """Compute final line total: qty*rate -> discount -> taxable -> GST -> total."""
+    qty = float(ln.quantity or 0)
+    rate = float(ln.rate or 0)
+    basic = qty * rate
+    discount = round(basic * (ln.discount_percent or 0) / 100, 2)
+    taxable = basic - discount
+    gst = round(taxable * (ln.tax_percent or 0) / 100, 2)
+    return round(taxable + gst, 2)
+
+
 def _recalc(po: PurchaseOrder, lines: list[PurchaseOrderLine]):
-    total = sum(float(l.amount or 0) for l in lines)
+    total = sum(float(_line_total(l)) for l in lines)
     po.total_amount = total
     received = all(float(l.received_qty or 0) >= float(l.quantity or 0) and float(l.quantity or 0) > 0 for l in lines if l.quantity)
     partial = any(float(l.received_qty or 0) > 0 for l in lines)
@@ -159,6 +170,8 @@ def create_purchase(body: PurchaseOrderCreate, db: Annotated[Session, Depends(ge
                        supplier_name=(body.supplier_name or "").strip(),
                        order_date=body.order_date, notes=body.notes)
     lines = [PurchaseOrderLine(**ln.model_dump()) for ln in body.lines]
+    for ln in lines:
+        ln.amount = _line_total(ln)
     po.lines = lines
     _recalc(po, lines)
     db.add(po)
@@ -191,6 +204,7 @@ def update_purchase(po_id: int, body: PurchaseOrderUpdate, db: Annotated[Session
         db.query(PurchaseOrderLine).filter(PurchaseOrderLine.po_id == po.id).delete()
         lines = [PurchaseOrderLine(**ln.model_dump()) for ln in body.lines]
         for ln in lines:
+            ln.amount = _line_total(ln)
             if ln.received_qty and ln.received_qty > float(ln.quantity or 0):
                 raise HTTPException(status_code=400,
                                     detail="Received quantity cannot exceed ordered quantity")
@@ -392,9 +406,15 @@ async def import_purchases(
                 product = resolve_or_create_product(db, p["item_code"], p["model"], allow_blank=True)
             rate = p["rate"]
             qty = float(p["qty"])
+            tax_pct = p["tax_percent"] or 0
+            disc_pct = p["discount_percent"] or 0
+            basic = (rate or 0) * qty
+            discount = round(basic * disc_pct / 100, 2)
+            taxable = basic - discount
+            gst = round(taxable * tax_pct / 100, 2)
             amount = p["amount"]
-            if amount is None and rate is not None:
-                amount = round(rate * qty, 2)
+            if amount is None:
+                amount = round(taxable + gst, 2)
             lines.append(PurchaseOrderLine(
                 product_id=product.id,
                 description=p["model"],

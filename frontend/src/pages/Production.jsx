@@ -305,12 +305,16 @@ export default function Production() {
       return <Badge className={isTrading ? 'bg-cyan-100 text-cyan-700' : 'bg-blue-100 text-blue-700'}>{isTrading ? 'Trading' : 'Manufacturing'}</Badge>
     }},
     { key: 'customer', label: 'Customer', render: (r) => <span className="font-medium">{r.customer?.name || '—'}</span> },
+    { key: 'local_order', label: 'Local Order', render: (r) => r.sales_order_id ? <span className="font-mono text-xs" title={`Local Order #${r.sales_order_id}`}>{r.sales_order_no || `#${r.sales_order_id}`}</span> : '—' },
     { key: 'schedule_qty', label: 'Schedule', render: (r) => <span className="font-semibold tabular-nums">{fmtNum(r.schedule_qty)}</span> },
     { key: 'ask_till_date', label: 'Ask Till Date', render: (r) => <span className="tabular-nums">{r.ask_till_date != null ? fmtNum(r.ask_till_date) : '—'}</span> },
     { key: 'produced_qty', label: 'Production Qty', render: (r) => <span className="font-semibold text-green-700 tabular-nums">{fmtNum(r.produced_qty)}</span> },
     { key: 'completion_pct', label: '% Comp', render: (r) => <div className="min-w-32"><CompletionBar value={r.completion_pct} /></div> },
     { key: 'balance_qty', label: 'Balance Qty', render: (r) => <span className={`tabular-nums ${r.balance_qty < 0 ? 'text-red-600 font-semibold' : ''}`}>{fmtNum(r.balance_qty)}</span> },
-    { key: 'status', label: 'Status', render: (r) => <Badge className={sc[r.status]} dot>{r.status}</Badge> },
+    { key: 'status', label: 'Status', render: (r) => {
+      const label = (r.sales_order_id && r.status === 'In Production') ? 'In Process' : r.status
+      return <Badge className={sc[label] || sc[r.status]} dot>{label}</Badge>
+    }},
     { key: 'actions', label: '', render: (r) => (
       <div className="flex items-center gap-0.5">
         <button onClick={() => {

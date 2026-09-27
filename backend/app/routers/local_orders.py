@@ -29,8 +29,8 @@ from ..crud import write_audit
 from ..database import get_db
 from ..models import (
     Customer, Dispatch, DispatchLine, ImportBatch, OrderStatus, OrderType, Plan,
-    Product, ProductionOrder, PurchaseRequirement, SalesOrder,
-    SalesOrderLine,
+    Product, ProductCategory, ProductSourceType, ProductionOrder, ProductionStatus,
+    PurchaseRequirement, SalesOrder, SalesOrderLine,
 )
 from ..schemas import LocalOrderCreate, LocalOrderUpdate
 from ..services import reorder_alerts as re_alerts
@@ -44,6 +44,7 @@ from ..services.local_orders import (
     sync_local_order_status,
 )
 from ..services.stock_service import resolve_or_create_product
+from ..routers.production import _resolve_production_product, _next_no as _prod_next_no
 from datetime import date
 
 router = APIRouter(prefix="/local-orders", tags=["local-orders"])
@@ -54,6 +55,70 @@ def _local_no(db: Session) -> str:
     n = db.scalar(select(func.max(func.cast(func.substr(SalesOrder.order_no, len(prefix) + 1), Integer)))
                   .where(SalesOrder.order_no.like(f"{prefix}%"))) or 0
     return f"{prefix}{n + 1:03d}"
+
+
+def _ensure_local_order_production_plan(db: Session, o: SalesOrder) -> ProductionOrder | None:
+    """Create a ProductionOrder for a Manufacturing Local Order when it reaches
+    'Production In Progress' status. Reuse an existing linked plan if present."""
+    if o.order_type != OrderType.local:
+        return None
+    if normalize_local_type(o.local_order_type) != "MANUFACTURING":
+        return None
+    if o.status != OrderStatus.production_in_process:
+        return None
+    existing = db.scalars(
+        select(ProductionOrder).where(ProductionOrder.sales_order_id == o.id).limit(1)
+    ).first()
+    if existing:
+        return existing
+
+    # Resolve a product from the first resolvable line.
+    product = None
+    for ln in o.lines:
+        if ln.product_id:
+            product = db.get(Product, ln.product_id)
+        if product is None:
+            product = _resolve_production_product(
+                db, ln.item_code or "", ln.description or ln.model or "", category="Manufacturing"
+            )
+        if product:
+            break
+    if product is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot create production plan: local order has no product or item code/description",
+        )
+
+    # Manufacturing plans must be classified as finished/MANUFACTURED.
+    if product.category != ProductCategory.finished or product.source_type != ProductSourceType.manufactured:
+        product.category = ProductCategory.finished
+        product.source_type = ProductSourceType.manufactured
+        db.flush()
+
+    # Schedule / pending quantity = total order quantity.
+    schedule_qty = sum(float(ln.quantity or 0) for ln in o.lines)
+
+    customer_id = o.customer_id
+    if not customer_id and o.customer_name:
+        c = get_or_create_customer(db, o.customer_name, "", "")
+        if c:
+            customer_id = c.id
+
+    po = ProductionOrder(
+        order_no=_prod_next_no(db),
+        product_id=product.id,
+        customer_id=customer_id,
+        sales_order_id=o.id,
+        schedule_qty=schedule_qty,
+        produced_qty=0,
+        opening_stock=0,
+        status=ProductionStatus.in_production,
+        report_date=date.today(),
+        remarks=f"Auto-created from Local Order {o.order_no}",
+    )
+    db.add(po)
+    db.flush()
+    return po
 
 
 def _t(v) -> str:
@@ -571,6 +636,7 @@ def create_local_order(body: LocalOrderCreate, db: Annotated[Session, Depends(ge
     db.add(o)
     db.flush()
     sync_local_order_status(db, o)
+    _ensure_local_order_production_plan(db, o)
     db.commit()
     db.refresh(o)
     write_audit(db, user, "CREATE", "sales_orders", o.id, f"Created LOCAL order {o.order_no}")
@@ -629,6 +695,7 @@ def update_local_order(order_id: int, body: LocalOrderUpdate,
 
     if not manual_status and o.status != OrderStatus.cancelled:
         sync_local_order_status(db, o)
+    _ensure_local_order_production_plan(db, o)
     db.commit()
     db.refresh(o)
     write_audit(db, user, "UPDATE", "sales_orders", o.id, f"Updated LOCAL order {o.order_no}")

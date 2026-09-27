@@ -766,9 +766,13 @@ export default function LocalOrders() {
               <label className="block text-slate-500 text-xs mb-1">Status <span className="text-slate-400">(manual)</span></label>
               <select value={form.status || 'New'} onChange={(e) => setForm({ ...form, status: e.target.value })} className="input">
                 <option value="New">New</option>
-                <option value="In Production">Production Required</option>
-                <option value="Production In Process">Production In Process</option>
-                <option value="Production Completed">Production Completed</option>
+                {(form.local_order_type || 'TRADING') === 'MANUFACTURING' && (
+                  <>
+                    <option value="In Production">Production Required</option>
+                    <option value="Production In Process">Production In Process</option>
+                    <option value="Production Completed">Production Completed</option>
+                  </>
+                )}
                 <option value="Ready">Ready for Dispatch</option>
                 <option value="Confirmed">Purchase / Stock Required</option>
                 <option value="Dispatched">Partially Dispatched</option>

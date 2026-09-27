@@ -9,8 +9,9 @@ from ..auth import CurrentUser, AllStaff, ManagerOrAdmin
 from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
 from ..models import (
-    Customer, MovementType, Plant, Product, ProductCategory, ProductionMovement, ProductionOrder,
-    ProductionStatus, StockMovement, Plan, PlanType, ProductSourceType,
+    Customer, MovementType, OrderStatus, OrderType, Plant, Product, ProductCategory,
+    ProductionMovement, ProductionOrder, ProductionStatus, SalesOrder, StockMovement,
+    Plan, PlanType, ProductSourceType,
 )
 from ..schemas import ProductionOrderCreate, ProductionOrderOut, ProductionOrderUpdate
 from ..services.business import sync_purchase_shortages
@@ -43,9 +44,12 @@ def _next_no(db: Session) -> str:
 def _serialize_po(db: Session, o: ProductionOrder) -> dict:
     product = o.product
     customer = o.customer
+    sales_order = o.sales_order
     return {
         "id": o.id, "order_no": o.order_no, "product_id": o.product_id,
         "customer_id": o.customer_id,
+        "sales_order_id": o.sales_order_id,
+        "sales_order_no": sales_order.order_no if sales_order else None,
         "section": o.section, "schedule_qty": o.schedule_qty, "ask_till_date": o.ask_till_date,
         "produced_qty": o.produced_qty, "completion_pct": o.completion_pct,
         "balance_qty": o.balance_qty, "opening_stock": o.opening_stock,
@@ -72,6 +76,23 @@ def _recalc_status(o: ProductionOrder):
     if o.schedule_qty > 0 and o.produced_qty >= o.schedule_qty:
         o.status = ProductionStatus.completed
         o.completion_date = date.today()
+
+
+def _sync_completed_to_local_order(db: Session, o: ProductionOrder):
+    """When a ProductionOrder linked to a Manufacturing Local Order is completed,
+    update the Local Order status to Production Completed."""
+    if not o.sales_order_id:
+        return
+    so = db.get(SalesOrder, o.sales_order_id)
+    if so is None or so.order_type != OrderType.local:
+        return
+    if so.status == OrderStatus.cancelled:
+        return
+    if (so.local_order_type or "").upper() != "MANUFACTURING":
+        return
+    if so.status != OrderStatus.production_completed:
+        so.status = OrderStatus.production_completed
+        db.flush()
 
 
 def _stocked(db: Session, order_id: int) -> bool:
@@ -269,6 +290,7 @@ def update_production(order_id: int, body: ProductionOrderUpdate,
     apply_updates(o, body, exclude={"produced_qty", "customer_name"})
     o.produced_qty = sum(float(m.quantity or 0) for m in o.movements)
     _recalc_status(o)
+    _sync_completed_to_local_order(db, o)
     db.commit()
     db.refresh(o)
     write_audit(db, user, "UPDATE", "production_orders", o.id, f"Updated production order {o.order_no}")
@@ -296,7 +318,8 @@ def complete_production(order_id: int, db: Annotated[Session, Depends(get_db)], 
     if not o.completion_date:
         o.completion_date = date.today()
     _recalc_status(o)
-    
+    _sync_completed_to_local_order(db, o)
+
     db.commit()
     db.refresh(o)
     write_audit(db, user, "UPDATE", "production_orders", o.id, f"Completed production order {o.order_no}")
@@ -314,6 +337,7 @@ def add_movement(order_id: int, quantity: float, production_date: str,
     db.add(ProductionMovement(production_order_id=o.id, quantity=quantity, production_date=d))
     o.produced_qty += quantity
     _recalc_status(o)
+    _sync_completed_to_local_order(db, o)
     # finished goods increase
     apply_movement(db, o.product_id, MovementType.production_output, quantity,
                    d, ref_type="production_order", ref_id=o.id,

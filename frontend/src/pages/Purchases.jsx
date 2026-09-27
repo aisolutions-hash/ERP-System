@@ -30,6 +30,19 @@ export default function Purchases() {
   const [form, setForm] = useState({ lines: [] })
   const [error, setError] = useState(null)
 
+  const calcLine = (ln) => {
+    const q = Number(ln.quantity || 0)
+    const r = Number(ln.rate || 0)
+    const basic = q * r
+    const discPct = Number(ln.discount_percent || 0)
+    const discount = basic * discPct / 100
+    const taxable = basic - discount
+    const taxPct = Number(ln.tax_percent || 0)
+    const gst = taxable * taxPct / 100
+    const total = taxable + gst
+    return { basic, discount, taxable, gst, total }
+  }
+
   const load = () => {
     setLoading(true)
     api.get('/purchases', { params: { search } })
@@ -63,10 +76,8 @@ export default function Purchases() {
   const setLine = (i, k, v) => {
     const lines = [...form.lines]
     lines[i] = { ...lines[i], [k]: v }
-    if ((k === 'product_id' || k === 'quantity' || k === 'rate')) {
-      const q = Number(lines[i].quantity || 0)
-      const r = Number(lines[i].rate || 0)
-      lines[i].amount = q * r
+    if (k === 'quantity' || k === 'rate' || k === 'tax_percent' || k === 'discount_percent') {
+      lines[i].amount = calcLine(lines[i]).total
     }
     setForm({ ...form, lines })
   }
@@ -81,9 +92,7 @@ export default function Purchases() {
       item_code: p ? (lines[i].item_code || p.item_code || '') : (lines[i].item_code || (id ? '' : '')),
       uom: lines[i].uom || p?.uom || '',
     }
-    const q = Number(lines[i].quantity || 0)
-    const r = Number(lines[i].rate || 0)
-    lines[i].amount = q * r
+    lines[i].amount = calcLine(lines[i]).total
     setForm({ ...form, lines })
   }
 
@@ -200,9 +209,9 @@ export default function Purchases() {
               { key: 'received_qty', label: 'Received', render: (l) => fmtNum(l.received_qty) },
               { key: 'pending', label: 'Pending', render: (l) => <span className={l.quantity - (l.received_qty || 0) > 0 ? 'text-amber-600' : 'text-green-600'}>{fmtNum((l.quantity || 0) - (l.received_qty || 0))}</span> },
               { key: 'rate', label: 'Rate', render: (l) => l.rate != null ? fmtNum(l.rate) : '—' },
-              { key: 'amount', label: 'Amount', render: (l) => l.amount != null ? fmtNum(l.amount) : '—' },
+              { key: 'amount', label: 'Total Amount', render: (l) => l.amount != null ? fmtNum(l.amount) : '—' },
               { key: 'uom', label: 'UOM', render: (l) => l.uom || '—' },
-              { key: 'tax_percent', label: 'Tax %', render: (l) => l.tax_percent != null ? `${l.tax_percent}%` : '—' },
+              { key: 'tax_percent', label: 'GST %', render: (l) => l.tax_percent != null ? `${l.tax_percent}%` : '—' },
               { key: 'discount_percent', label: 'Disc %', render: (l) => l.discount_percent != null ? `${l.discount_percent}%` : '—' },
             ]}
             data={detail.lines || []}
@@ -220,7 +229,7 @@ export default function Purchases() {
             <h3 className="text-lg font-bold mb-4">Import Purchase Orders</h3>
             <p className="text-sm text-gray-500 mb-4">
               CSV or Excel. Required: PO Number, Item Code or Description, Quantity.
-              Optional: Supplier, Rate, UOM, Tax %, Discount %.
+              Optional: Supplier, Rate, UOM, GST %, Discount %.
             </p>
             <input type="file" accept=".csv,.xlsx,.xls" className="input mb-4" onChange={e => setImportFile(e.target.files?.[0])} />
             {importResult && (
@@ -293,33 +302,56 @@ export default function Purchases() {
             <div className="col-span-1">Qty</div>
             <div className="col-span-1">Rate</div>
             <div className="col-span-1">UOM</div>
-            <div className="col-span-2">Tax %</div>
+            <div className="col-span-2">GST %</div>
             <div className="col-span-2">Disc %</div>
             <div className="col-span-1" />
           </div>
-          <div className="space-y-2">
-            {form.lines.map((ln, i) => (
-              <div key={i} className="grid grid-cols-12 gap-2 items-center text-xs">
-                <SearchSelect
-                  options={products.map((p) => ({ id: p.id, label: `${p.model}${p.item_code ? ` (${p.item_code})` : ''}` }))}
-                  value={ln.product_id || null}
-                  initialLabel={!ln.product_id ? (ln.description || '') : ''}
-                  placeholder="Product or manual item…"
-                  className="input col-span-3 py-2"
-                  onChange={(id, manual) => setLineProduct(i, id || '', manual)}
-                />
-                <input value={ln.item_code ?? ''} onChange={(e) => setLine(i, 'item_code', e.target.value)}
-                  placeholder="Code" className="input col-span-1 py-2" />
-                <input value={ln.quantity ?? ''} type="number" onChange={(e) => setLine(i, 'quantity', e.target.value)} placeholder="Qty" className="input col-span-1 py-2" />
-                <input value={ln.rate ?? ''} type="number" onChange={(e) => setLine(i, 'rate', e.target.value)} placeholder="Rate" className="input col-span-1 py-2" />
-                <input value={ln.uom || ''} onChange={(e) => setLine(i, 'uom', e.target.value)} placeholder="UOM" className="input col-span-1 py-2" />
-                <input value={ln.tax_percent ?? ''} type="number" min="0" step="0.01" onChange={(e) => setLine(i, 'tax_percent', e.target.value === '' ? null : Number(e.target.value))} placeholder="Tax %" className="input col-span-2 py-2 text-sm font-semibold text-right" />
-                <input value={ln.discount_percent ?? ''} type="number" min="0" step="0.01" onChange={(e) => setLine(i, 'discount_percent', e.target.value === '' ? null : Number(e.target.value))} placeholder="Disc %" className="input col-span-2 py-2 text-sm font-semibold text-right" />
-                <button onClick={() => { if (form.lines.length > 1) setForm({ ...form, lines: form.lines.filter((_, j) => j !== i) }) }} className="col-span-1 text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
-              </div>
-            ))}
+          <div className="space-y-3">
+            {form.lines.map((ln, i) => {
+              const c = calcLine(ln)
+              return (
+                <div key={i} className="space-y-1">
+                  <div className="grid grid-cols-12 gap-2 items-center text-xs">
+                    <SearchSelect
+                      options={products.map((p) => ({ id: p.id, label: `${p.model}${p.item_code ? ` (${p.item_code})` : ''}` }))}
+                      value={ln.product_id || null}
+                      initialLabel={!ln.product_id ? (ln.description || '') : ''}
+                      placeholder="Product or manual item…"
+                      className="input col-span-3 py-2"
+                      onChange={(id, manual) => setLineProduct(i, id || '', manual)}
+                    />
+                    <input value={ln.item_code ?? ''} onChange={(e) => setLine(i, 'item_code', e.target.value)}
+                      placeholder="Code" className="input col-span-1 py-2" />
+                    <input value={ln.quantity ?? ''} type="number" onChange={(e) => setLine(i, 'quantity', e.target.value)} placeholder="Qty" className="input col-span-1 py-2" />
+                    <input value={ln.rate ?? ''} type="number" onChange={(e) => setLine(i, 'rate', e.target.value)} placeholder="Rate" className="input col-span-1 py-2" />
+                    <input value={ln.uom || ''} onChange={(e) => setLine(i, 'uom', e.target.value)} placeholder="UOM" className="input col-span-1 py-2" />
+                    <input value={ln.tax_percent ?? ''} list="gst-suggestions" type="number" min="0" step="0.01" onChange={(e) => setLine(i, 'tax_percent', e.target.value === '' ? null : Number(e.target.value))} placeholder="GST %" className="input col-span-2 py-2 text-sm font-semibold text-right" />
+                    <input value={ln.discount_percent ?? ''} type="number" min="0" step="0.01" onChange={(e) => setLine(i, 'discount_percent', e.target.value === '' ? null : Number(e.target.value))} placeholder="Disc %" className="input col-span-2 py-2 text-sm font-semibold text-right" />
+                    <button onClick={() => { if (form.lines.length > 1) setForm({ ...form, lines: form.lines.filter((_, j) => j !== i) }) }} className="col-span-1 text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-[10px] text-slate-500 px-1">
+                    <span>Basic: <b className="text-slate-700">{fmtNum(c.basic)}</b></span>
+                    <span>Disc: <b className="text-slate-700">{fmtNum(c.discount)}</b></span>
+                    <span>Taxable: <b className="text-slate-700">{fmtNum(c.taxable)}</b></span>
+                    <span>GST: <b className="text-slate-700">{fmtNum(c.gst)}</b></span>
+                    <span>Total: <b className="text-blue-700">{fmtNum(c.total)}</b></span>
+                  </div>
+                </div>
+              )
+            })}
+            <datalist id="gst-suggestions">
+              <option value="5" />
+              <option value="12" />
+              <option value="18" />
+            </datalist>
           </div>
           <button onClick={() => setForm({ ...form, lines: [...form.lines, { product_id: '', description: '', item_code: '', quantity: '', received_qty: 0, rate: '', amount: '', uom: '', tax_percent: null, discount_percent: null }] })} className="btn btn-ghost mt-2 text-xs"><Plus size={12} className="inline mr-1" />Add line</button>
+          <div className="mt-4 flex justify-end border-t pt-3">
+            <div className="text-right">
+              <div className="text-xs text-slate-500 uppercase tracking-wide">Grand Total</div>
+              <div className="text-2xl font-bold text-slate-800">{fmtNum(form.lines.reduce((s, l) => s + (Number(l.amount) || 0), 0))}</div>
+            </div>
+          </div>
         </Modal>
       )}
     </div>
