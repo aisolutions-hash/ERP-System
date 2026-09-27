@@ -146,7 +146,7 @@ export default function RawMaterials() {
     try {
       const productId = Number(balance.product_id)
       const params = { product_id: productId, report_date: balance.report_date }
-      for (const k of ['schedule_qty', 'ask_till_date', 'inward_qty', 'min_stock', 'max_stock']) {
+      for (const k of ['schedule_qty', 'ask_till_date', 'inward_qty', 'opening_stock', 'min_stock', 'max_stock']) {
         if (balance[k] !== '' && balance[k] != null) params[k] = Number(balance[k])
       }
       await api.post('/raw-materials/balances', null, { params })
