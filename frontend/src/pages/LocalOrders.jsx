@@ -587,7 +587,7 @@ export default function LocalOrders() {
 
       <Card title="Production / Dispatch Plans (Local)" subtitle="Production & dispatch plans with linked order, production and dispatch progress"
         actions={<button onClick={() => downloadFile('/local-orders/report/plans', 'local_plans.csv')} className="btn btn-secondary btn-sm"><Download size={13} /> Download CSV</button>}>
-        {plans.length === 0 ? <Empty text="No plans" /> : <Table columns={planCols} data={plans} keyField="id" stickyColumns={['model']} dense />}
+        {plans.length === 0 ? <Empty text="No plans" /> : <Table columns={planCols} data={[...plans].sort((a, b) => new Date(b.plan_date || 0) - new Date(a.plan_date || 0))} keyField="id" stickyColumns={['model']} dense />}
       </Card>
 
       {/* Detail modal */}
