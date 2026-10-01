@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Eye, Pencil, X, Store, ClipboardList, CheckCircle2, Trash2, Truck, Calendar, PackageSearch, ArrowLeftRight, Upload, Share2, Printer, Download } from 'lucide-react'
+import { Plus, Pencil, X, Store, ClipboardList, CheckCircle2, Trash2, Truck, Calendar, PackageSearch, ArrowLeftRight, Upload, Share2, Printer, Download } from 'lucide-react'
 import api, { downloadFile } from '../lib/api'
 import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard, StatusBadge, SearchSelect } from '../components/ui'
 import Table from '../components/Table'
@@ -465,47 +465,22 @@ export default function LocalOrders() {
 
   const orderCols = [
     { key: 'order_no', label: 'Order', render: (r) => <span className="font-mono text-xs font-medium">{r.order_no || '—'}</span> },
-    { key: 'so_no', label: 'SO Number', render: (r) => <span className="font-mono text-xs">{r.so_no || '—'}</span> },
-    { key: 'customer_po_no', label: 'PO Number', render: (r) => <span className="font-mono text-xs">{r.customer_po_no || '—'}</span> },
     { key: 'customer', label: 'Customer', render: (r) => <span className="font-medium">{r.customer || '—'}</span> },
     { key: 'order_type', label: 'Type', render: (r) => <Badge className={r.order_type === 'MANUFACTURING' ? 'bg-violet-100 text-violet-700' : 'bg-cyan-100 text-cyan-700'}>{r.order_type || 'TRADING'}</Badge> },
-    { key: 'order_date', label: 'Order Date', render: (r) => r.order_date || '—' },
     { key: 'delivery_date', label: 'Delivery', render: (r) => r.delivery_date || '—' },
     { key: 'item', label: 'Size / Description', render: (r) => {
       const first = (r.lines || [])[0]
       return <span className="text-xs block max-w-40 truncate">{first?.description || first?.model || '—'}{(r.lines?.length || 0) > 1 ? ` +${r.lines.length - 1}` : ''}</span>
     } },
     { key: 'quantity', label: 'Qty', render: (r) => fmtNum(r.quantity) },
-    { key: 'unit', label: 'Unit', render: (r) => {
-      const first = (r.lines || [])[0]
-      return first?.uom ? <span className="text-xs">{first.uom}</span> : '—'
-    } },
     { key: 'rate', label: 'Rate', render: (r) => {
       const first = (r.lines || [])[0]
       return first?.rate != null ? fmtNum(first.rate) : '—'
     } },
-    { key: 'less', label: 'Less', render: (r) => {
-      const first = (r.lines || [])[0]
-      return first?.less != null ? fmtNum(first.less) : '—'
-    } },
     { key: 'total_value', label: 'Amount', render: (r) => <span className="font-mono text-xs font-medium">{fmtNum(r.total_value)}</span> },
-    { key: 'dispatched_qty', label: 'Dispatched', render: (r) => fmtNum(r.dispatched_qty) },
     { key: 'pending_qty', label: 'Pending', render: (r) => <span className="font-medium">{fmtNum(r.pending_qty)}</span> },
-    { key: 'dispatch_stock', label: 'Disp Stock', render: (r) => <span className="font-mono text-xs">{fmtNum(r.stock_summary?.dispatch_stock)}</span> },
     { key: 'main_stock', label: 'Main Store', render: (r) => <span className="font-mono text-xs">{fmtNum(r.stock_summary?.main_store_stock)}</span> },
     { key: 'status', label: 'Status', render: (r) => <StatusBadge status={r.status} /> },
-    { key: 'actions', label: '', render: (r) => (
-      <div className="flex items-center gap-0.5">
-        <button onClick={() => openDetail(r)} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="View"><Eye size={14} /></button>
-        {r.stock_summary?.transfer_required ? (
-          <button onClick={() => transferForOrder(r)} className="text-violet-600 hover:text-violet-800 p-1 hover:bg-violet-50 rounded" title="Stock exists — transfer Main Store → Dispatch"><ArrowLeftRight size={14} /></button>
-        ) : (
-          <button onClick={() => openNewEntry(r, (r.lines || [])[0])} className="text-blue-500 hover:text-blue-700 p-1 hover:bg-blue-50 rounded" title="Dispatch now"><Truck size={14} /></button>
-        )}
-        <button onClick={() => openEdit(r)} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="Edit"><Pencil size={14} /></button>
-        <button onClick={(e) => { e.stopPropagation(); removeOrder(r) }} className="text-slate-400 hover:text-red-600 p-1 hover:bg-red-50 rounded" title="Delete"><Trash2 size={14} /></button>
-      </div>
-    )},
   ]
 
   const detailLineCols = [
@@ -618,16 +593,24 @@ export default function LocalOrders() {
       {/* Detail modal */}
       <Modal open={!!detail} title={detail && !detail.loading ? `Local Order ${detail.order_no}` : 'Loading…'} onClose={() => setDetail(null)} wide
         footer={<>
-          {detail && !detail.loading && (detail.stock_summary?.transfer_required
-            ? <button onClick={() => transferForOrder(detail)} className="btn btn-secondary mr-auto"><ArrowLeftRight size={14} className="mr-1" /> Transfer to Dispatch</button>
-            : <button onClick={() => openNewEntry(detail, (detail.lines || [])[0])} className="btn btn-primary mr-auto"><Truck size={14} className="mr-1" /> Dispatch</button>)}
           {detail && !detail.loading && (
-            <>
-              <button onClick={shareOrder} className="btn btn-secondary"><Share2 size={14} className="mr-1" /> Share</button>
-              <button onClick={downloadPdf} className="btn btn-secondary"><Printer size={14} className="mr-1" /> PDF</button>
-            </>
+            <div className="flex items-center gap-2 mr-auto">
+              <button onClick={() => { setDetail(null); openEdit(detail) }} className="btn btn-secondary"><Pencil size={14} className="mr-1" /> Edit</button>
+              <button onClick={() => removeOrder(detail)} className="btn btn-danger"><Trash2 size={14} className="mr-1" /> Delete</button>
+              {detail.stock_summary?.transfer_required
+                ? <button onClick={() => transferForOrder(detail)} className="btn btn-secondary"><ArrowLeftRight size={14} className="mr-1" /> Transfer to Dispatch</button>
+                : <button onClick={() => openNewEntry(detail, (detail.lines || [])[0])} className="btn btn-primary"><Truck size={14} className="mr-1" /> Dispatch</button>}
+            </div>
           )}
-          <button onClick={() => setDetail(null)} className="btn btn-secondary">Close</button>
+          <div className="flex items-center gap-2">
+            {detail && !detail.loading && (
+              <>
+                <button onClick={shareOrder} className="btn btn-secondary"><Share2 size={14} className="mr-1" /> Share</button>
+                <button onClick={downloadPdf} className="btn btn-secondary"><Printer size={14} className="mr-1" /> PDF</button>
+              </>
+            )}
+            <button onClick={() => setDetail(null)} className="btn btn-secondary">Close</button>
+          </div>
         </>}>
         {detailLoading || detail?.loading ? <Loading /> : detail && (
           <>
