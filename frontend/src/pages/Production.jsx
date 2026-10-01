@@ -180,6 +180,7 @@ export default function Production() {
     try {
       const askTill = prodForm.ask_till_date === '' || prodForm.ask_till_date == null
         ? null : Number(prodForm.ask_till_date)
+      let orderId = prodForm.id || null
       if (prodForm.id) {
         await api.patch(`/production/${prodForm.id}`, {
           schedule_qty: Number(prodForm.schedule_qty || 0),
@@ -206,12 +207,13 @@ export default function Production() {
           status: 'Planned',
           category: prodForm.category || 'Manufacturing',
         })
-        const qty = Number(prodForm.produced_qty || 0)
-        if (qty > 0) {
-          await api.post(`/production/${r.data.id}/movements`, null, {
-            params: { quantity: qty, production_date: prodForm.production_date || today() },
-          })
-        }
+        orderId = r.data.id
+      }
+      const qty = Number(prodForm.produced_qty || 0)
+      if (orderId && qty > 0) {
+        await api.post(`/production/${orderId}/movements`, null, {
+          params: { quantity: qty, production_date: prodForm.production_date || today() },
+        })
       }
       setShowProdForm(false); setProdForm({})
       refreshAll()
@@ -325,6 +327,7 @@ export default function Production() {
             customer_name: r.customer?.name || '', section: r.section,
             report_date: r.report_date, remarks: r.remarks, status: r.status,
             category: planCategory(r.product),
+            produced_qty: '', production_date: today(),
           })
           setShowProdForm(true)
         }} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="Edit"><Pencil size={15} /></button>
@@ -404,7 +407,7 @@ export default function Production() {
               <div className="flex items-center gap-2 flex-wrap">
                 <button onClick={() => downloadFile('/production/import/template', 'production_plan_template.csv')} className="btn btn-secondary"><Download size={15} /> Template</button>
                 <button onClick={() => { setImportFile(null); setImportPreview(null); setImportResult(null); setImportError(null); setShowImport(true) }} className="btn btn-secondary"><Upload size={15} /> Import Production Plan</button>
-                <button onClick={() => { setProdForm({ category: 'Manufacturing' }); setShowProdForm(true) }} className="btn btn-primary"><Plus size={15} /> New Plan</button>
+                <button onClick={() => { setProdForm({ category: 'Manufacturing', produced_qty: '', production_date: today() }); setShowProdForm(true) }} className="btn btn-primary"><Plus size={15} /> New Plan</button>
               </div>
             }>
             {loading ? <Loading /> : productionOrders.length === 0
@@ -561,14 +564,12 @@ export default function Production() {
             <input type="number" min="0" value={prodForm.schedule_qty ?? ''} onChange={(e) => setProdForm({ ...prodForm, schedule_qty: e.target.value })} className="input" /></div>
           <div><label className="block text-slate-500 text-xs mb-1">Ask Till Date</label>
             <input type="number" min="0" value={prodForm.ask_till_date ?? ''} onChange={(e) => setProdForm({ ...prodForm, ask_till_date: e.target.value })} className="input" /></div>
-          {!prodForm.id && (
-            <>
-              <div><label className="block text-slate-500 text-xs mb-1">Production Quantity</label>
-                <input type="number" min="0" value={prodForm.produced_qty ?? ''} onChange={(e) => setProdForm({ ...prodForm, produced_qty: e.target.value })} className="input" /></div>
-              <div><label className="block text-slate-500 text-xs mb-1">Production Date</label>
-                <input type="date" value={prodForm.production_date || today()} onChange={(e) => setProdForm({ ...prodForm, production_date: e.target.value })} className="input" /></div>
-            </>
-          )}
+          <div><label className="block text-slate-500 text-xs mb-1">
+            {prodForm.id ? 'Record Actual Production Quantity' : 'Production Quantity'}
+          </label>
+            <input type="number" min="0" value={prodForm.produced_qty ?? ''} onChange={(e) => setProdForm({ ...prodForm, produced_qty: e.target.value })} className="input" placeholder={prodForm.id ? 'Add output to actual' : ''} /></div>
+          <div><label className="block text-slate-500 text-xs mb-1">Production Date</label>
+            <input type="date" value={prodForm.production_date || today()} onChange={(e) => setProdForm({ ...prodForm, production_date: e.target.value })} className="input" /></div>
           <div className="sm:col-span-2"><label className="block text-slate-500 text-xs mb-1">Customer</label>
             <SearchSelect
               options={customers.map((c) => ({ id: c.id, label: c.name }))}
