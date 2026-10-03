@@ -223,6 +223,10 @@ class PurchaseOrderCreate(BaseModel):
     po_number: str = Field(min_length=1, max_length=120)
     supplier_id: Optional[int] = None
     supplier_name: str = ""
+    supplier_gstin: str = ""
+    supplier_address: str = ""
+    supplier_phone: str = ""
+    supplier_email: str = ""
     order_date: date = Field(default_factory=date.today)
     status: PurchaseStatus = PurchaseStatus.ordered
     notes: str = ""
@@ -233,6 +237,10 @@ class PurchaseOrderUpdate(BaseModel):
     po_number: Optional[str] = None
     supplier_id: Optional[int] = None
     supplier_name: Optional[str] = None
+    supplier_gstin: Optional[str] = None
+    supplier_address: Optional[str] = None
+    supplier_phone: Optional[str] = None
+    supplier_email: Optional[str] = None
     order_date: Optional[date] = None
     status: Optional[PurchaseStatus] = None
     notes: Optional[str] = None

@@ -21,6 +21,7 @@ from ..services.import_common import (
 from ..services.reorder_alerts import refresh_reorder_alert
 from ..services.rm_service import add_rm_inward, match_raw_material
 from ..services.stock_service import apply_movement, resolve_or_create_product, reverse_and_remove_ref
+from ..services.suppliers import get_or_create_supplier
 from ..schemas import (
     PurchaseOrderCreate, PurchaseOrderLineIn, PurchaseOrderUpdate,
 )
@@ -52,7 +53,9 @@ def _serialize_po(db: Session, po: PurchaseOrder) -> dict:
         "order_date": po.order_date, "status": po.status.value,
         "total_amount": float(po.total_amount), "notes": po.notes,
         "created_at": po.created_at,
-        "supplier": {"id": supplier.id, "name": supplier.name}
+        "supplier": {"id": supplier.id, "name": supplier.name, "gstin": supplier.gstin or "",
+                     "address": supplier.address or "", "phone": supplier.phone or "",
+                     "email": supplier.email or ""}
         if supplier else ({"name": po.supplier_name} if po.supplier_name else None),
         "lines": lines,
     }
@@ -164,11 +167,26 @@ def list_purchases(
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_purchase(body: PurchaseOrderCreate, db: Annotated[Session, Depends(get_db)],
                     user: ManagerOrAdmin):
-    if body.supplier_id is not None and not db.get(Supplier, body.supplier_id):
-        raise HTTPException(status_code=400, detail=f"Supplier {body.supplier_id} not found")
-    po = PurchaseOrder(po_number=body.po_number, supplier_id=body.supplier_id,
-                       supplier_name=(body.supplier_name or "").strip(),
-                       order_date=body.order_date, notes=body.notes)
+    supplier = None
+    if body.supplier_id is not None:
+        supplier = db.get(Supplier, body.supplier_id)
+        if not supplier:
+            raise HTTPException(status_code=400, detail=f"Supplier {body.supplier_id} not found")
+    if supplier is None and (body.supplier_name or body.supplier_gstin or body.supplier_phone or body.supplier_email):
+        supplier = get_or_create_supplier(
+            db,
+            name=body.supplier_name,
+            gstin=body.supplier_gstin,
+            address=body.supplier_address,
+            phone=body.supplier_phone,
+            email=body.supplier_email,
+        )
+    po = PurchaseOrder(
+        po_number=body.po_number,
+        supplier_id=supplier.id if supplier else None,
+        supplier_name=supplier.name if supplier else (body.supplier_name or "").strip(),
+        order_date=body.order_date, notes=body.notes,
+    )
     lines = [PurchaseOrderLine(**ln.model_dump()) for ln in body.lines]
     for ln in lines:
         ln.amount = _line_total(ln)
@@ -179,6 +197,7 @@ def create_purchase(body: PurchaseOrderCreate, db: Annotated[Session, Depends(ge
     db.refresh(po)
     write_audit(db, user, "CREATE", "purchase_orders", po.id, f"Created PO {po.po_number}")
     return _serialize_po(db, po)
+
 
 
 @router.get("/{po_id}", response_model=dict)
@@ -194,9 +213,28 @@ def update_purchase(po_id: int, body: PurchaseOrderUpdate, db: Annotated[Session
     po = get_or_404(db, PurchaseOrder, po_id)
     if body.po_number is not None and body.po_number != po.po_number:
         po.po_number = body.po_number
-    if body.supplier_id is not None and not db.get(Supplier, body.supplier_id):
-        raise HTTPException(status_code=400, detail=f"Supplier {body.supplier_id} not found")
-    apply_updates(po, body, exclude={"lines", "po_number"})
+
+    # Resolve supplier first so free-text supplier details can create/link a master record.
+    supplier = None
+    if body.supplier_id is not None:
+        supplier = db.get(Supplier, body.supplier_id)
+        if not supplier:
+            raise HTTPException(status_code=400, detail=f"Supplier {body.supplier_id} not found")
+    if supplier is None and (body.supplier_name or body.supplier_gstin or body.supplier_phone or body.supplier_email):
+        supplier = get_or_create_supplier(
+            db,
+            name=body.supplier_name,
+            gstin=body.supplier_gstin,
+            address=body.supplier_address,
+            phone=body.supplier_phone,
+            email=body.supplier_email,
+        )
+    if supplier is not None:
+        po.supplier_id = supplier.id
+        po.supplier_name = supplier.name
+
+    apply_updates(po, body, exclude={"lines", "po_number", "supplier_id", "supplier_name",
+                                     "supplier_gstin", "supplier_address", "supplier_phone", "supplier_email"})
     if body.lines is not None:
         # Reverse every previously received quantity before replacing the
         # line set, so editing a received PO never leaves stale stock.

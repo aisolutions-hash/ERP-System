@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
-  Plus, Pencil, RefreshCw, CalendarClock, CalendarDays, Factory, BarChart3, Trash2, Download, Upload,
+  Plus, Pencil, RefreshCw, CalendarClock, CalendarDays, Factory, BarChart3, Trash2, Download, Upload, Search,
 } from 'lucide-react'
 import api, { downloadFile } from '../lib/api'
 import { PageHeader, Card, Modal, Loading, Empty, Badge, PageTabs, StatCard, SearchSelect } from '../components/ui'
@@ -50,6 +50,11 @@ export default function Production() {
   const [outputForm, setOutputForm] = useState({})
   const [showEditActual, setShowEditActual] = useState(false)
   const [editForm, setEditForm] = useState({})
+
+  const [detail, setDetail] = useState(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailOutput, setDetailOutput] = useState({ qty: '', date: today() })
+  const [search, setSearch] = useState('')
 
   const [showImport, setShowImport] = useState(false)
   const [importFile, setImportFile] = useState(null)
@@ -178,6 +183,10 @@ export default function Production() {
 
   const saveProduction = async () => {
     try {
+      if (prodForm.status === 'Completed' && (Number(prodForm.existing_produced_qty || 0) + Number(prodForm.produced_qty || 0)) <= 0) {
+        alert('Please enter actual production quantity before marking Completed.')
+        return
+      }
       const askTill = prodForm.ask_till_date === '' || prodForm.ask_till_date == null
         ? null : Number(prodForm.ask_till_date)
       let orderId = prodForm.id || null
@@ -216,7 +225,8 @@ export default function Production() {
         })
       }
       setShowProdForm(false); setProdForm({})
-      refreshAll()
+      await refreshAll()
+      if (detail) openDetail({ id: detail.id, order_no: detail.order_no })
     } catch (e) {
       alert('Save failed: ' + (e.response?.data?.detail || e.message))
     }
@@ -225,8 +235,67 @@ export default function Production() {
   const removeProduction = (r) => {
     if (!window.confirm(`Delete production order ${r.order_no || r.id} for "${r.product?.model || ''}" and reverse its stock effect?`)) return
     api.delete(`/production/${r.id}`)
-      .then(() => refreshAll())
+      .then(() => { setDetail(null); refreshAll() })
       .catch((e) => alert('Delete failed: ' + (e.response?.data?.detail || e.message)))
+  }
+
+  const openProductionEdit = (r) => {
+    setProdForm({
+      id: r.id, product_id: r.product_id, item_code: r.product?.item_code || '',
+      model: r.product?.model || '', schedule_qty: r.schedule_qty,
+      ask_till_date: r.ask_till_date, customer_id: r.customer_id,
+      customer_name: r.customer?.name || '', section: r.section,
+      report_date: r.report_date, remarks: r.remarks, status: r.status,
+      category: planCategory(r.product),
+      produced_qty: '', production_date: today(),
+      existing_produced_qty: Number(r.produced_qty || 0),
+    })
+    setShowProdForm(true)
+  }
+
+  const openDetail = (r) => {
+    setDetail({ id: r.id, order_no: r.order_no, loading: true })
+    setDetailOutput({ qty: '', date: today() })
+    setDetailLoading(true)
+    api.get(`/production/${r.id}`)
+      .then((res) => setDetail(res.data))
+      .catch(() => setDetail(null))
+      .finally(() => setDetailLoading(false))
+  }
+
+  const updateDetailStatus = async (newStatus) => {
+    if (!detail) return
+    if (newStatus === 'Completed' && !(Number(detail.produced_qty || 0) > 0)) {
+      alert('Please enter actual production quantity before marking Completed.')
+      return
+    }
+    try {
+      await api.patch(`/production/${detail.id}`, { status: newStatus })
+      await refreshAll()
+      openDetail({ id: detail.id, order_no: detail.order_no })
+    } catch (e) {
+      alert('Status update failed: ' + (e.response?.data?.detail || e.message))
+    }
+  }
+
+  const recordDetailOutput = async () => {
+    if (!detail) return
+    const rawQty = String(detailOutput.qty || '').trim()
+    const qty = parseFloat(rawQty)
+    if (!rawQty || Number.isNaN(qty) || qty <= 0) {
+      alert(`Enter a valid positive production quantity (received: "${rawQty}")`)
+      return
+    }
+    try {
+      await api.post(`/production/${detail.id}/movements`, null, {
+        params: { quantity: qty, production_date: detailOutput.date || today() },
+      })
+      setDetailOutput({ qty: '', date: today() })
+      await refreshAll()
+      openDetail({ id: detail.id, order_no: detail.order_no })
+    } catch (e) {
+      alert('Record output failed: ' + (e.response?.data?.detail || e.message))
+    }
   }
 
   // ---- monthly schedule (reuses the existing production Plan records) -------
@@ -317,23 +386,6 @@ export default function Production() {
       const label = (r.sales_order_id && r.status === 'In Production') ? 'In Process' : r.status
       return <Badge className={sc[label] || sc[r.status]} dot>{label}</Badge>
     }},
-    { key: 'actions', label: '', render: (r) => (
-      <div className="flex items-center gap-0.5">
-        <button onClick={() => {
-          setProdForm({
-            id: r.id, product_id: r.product_id, item_code: r.product?.item_code || '',
-            model: r.product?.model || '', schedule_qty: r.schedule_qty,
-            ask_till_date: r.ask_till_date, customer_id: r.customer_id,
-            customer_name: r.customer?.name || '', section: r.section,
-            report_date: r.report_date, remarks: r.remarks, status: r.status,
-            category: planCategory(r.product),
-            produced_qty: '', production_date: today(),
-          })
-          setShowProdForm(true)
-        }} className="text-slate-400 hover:text-slate-700 p-1 hover:bg-gray-100 rounded" title="Edit"><Pencil size={15} /></button>
-        <button onClick={(e) => { e.stopPropagation(); removeProduction(r) }} className="text-slate-400 hover:text-red-600 p-1 hover:bg-red-50 rounded" title="Delete"><Trash2 size={14} /></button>
-      </div>
-    )},
   ]
 
   const scheduleCols = [
@@ -385,10 +437,24 @@ export default function Production() {
     { key: 'movements', label: 'Records', render: (r) => <span className="tabular-nums">{r.movements}</span> },
   ]
 
+  const matchesSearch = (p) => {
+    if (!search.trim()) return true
+    const q = search.toLowerCase()
+    return (
+      (p.product?.item_code || '').toLowerCase().includes(q) ||
+      (p.product?.model || '').toLowerCase().includes(q) ||
+      (p.customer?.name || '').toLowerCase().includes(q) ||
+      (p.sales_order_no || '').toLowerCase().includes(q) ||
+      (p.status || '').toLowerCase().includes(q) ||
+      (p.section || '').toLowerCase().includes(q)
+    )
+  }
+  const activeProductionOrders = productionOrders.filter((p) => p.status !== 'Completed' && matchesSearch(p))
+  const completedProductionOrders = productionOrders.filter((p) => p.status === 'Completed' && matchesSearch(p))
   const totalSchedule = productionOrders.reduce((s, p) => s + (Number(p.schedule_qty) || 0), 0)
   const totalProduced = productionOrders.reduce((s, p) => s + (Number(p.produced_qty) || 0), 0)
   const totalBalance = productionOrders.reduce((s, p) => s + (Number(p.balance_qty) || 0), 0)
-  const completedOrders = productionOrders.filter((p) => (p.completion_pct || 0) >= 1).length
+  const completedOrders = completedProductionOrders.length
   const totalScheduledPlans = plans.reduce((s, p) => s + (Number(p.quantity) || 0), 0)
   const totalActual = actual.reduce((s, p) => s + (Number(p.quantity) || 0), 0)
 
@@ -407,13 +473,18 @@ export default function Production() {
               <div className="flex items-center gap-2 flex-wrap">
                 <button onClick={() => downloadFile('/production/import/template', 'production_plan_template.csv')} className="btn btn-secondary"><Download size={15} /> Template</button>
                 <button onClick={() => { setImportFile(null); setImportPreview(null); setImportResult(null); setImportError(null); setShowImport(true) }} className="btn btn-secondary"><Upload size={15} /> Import Production Plan</button>
-                <button onClick={() => { setProdForm({ category: 'Manufacturing', produced_qty: '', production_date: today() }); setShowProdForm(true) }} className="btn btn-primary"><Plus size={15} /> New Plan</button>
+                <button onClick={() => { setProdForm({ category: 'Manufacturing', produced_qty: '', production_date: today(), existing_produced_qty: 0 }); setShowProdForm(true) }} className="btn btn-primary"><Plus size={15} /> New Plan</button>
               </div>
             }>
-            {loading ? <Loading /> : productionOrders.length === 0
-              ? <Empty text="No production plans found" />
-              : <Table columns={productionCols} data={productionOrders} keyField="id" stickyColumns={['model']} />}
+            {loading ? <Loading /> : activeProductionOrders.length === 0
+              ? <Empty text="No active production plans found" />
+              : <Table columns={productionCols} data={activeProductionOrders} keyField="id" onRowClick={openDetail} stickyColumns={['model']} />}
           </Card>
+          {completedProductionOrders.length > 0 && (
+            <Card title="Completed Production" subtitle={`${completedProductionOrders.length} completed production plan(s)`}>
+              <Table columns={productionCols} data={completedProductionOrders} keyField="id" onRowClick={openDetail} stickyColumns={['model']} />
+            </Card>
+          )}
         </div>
       )
     }
@@ -506,7 +577,13 @@ export default function Production() {
     <div className="animate-fade-in-up">
       <PageHeader title="Production" subtitle="Production schedule, date-wise actual output and monthly production report"
         actions={
-          <button onClick={refreshAll} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative flex items-center">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none z-10" />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search plans…" className="input sm:w-72 placeholder:text-slate-400" style={{ paddingLeft: '2.75rem' }} />
+            </div>
+            <button onClick={refreshAll} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>
+          </div>
         } />
 
       <PageTabs tabs={TABS} active={tab} onChange={setTab} />
@@ -592,6 +669,71 @@ export default function Production() {
             <textarea value={prodForm.remarks || ''} onChange={(e) => setProdForm({ ...prodForm, remarks: e.target.value })} className="input" rows={2} /></div>
           <div className="sm:col-span-2 text-xs text-slate-400">Production Quantity is recorded as date-wise actual output (production movement); completion % and balance update automatically.</div>
         </div>
+      </Modal>
+
+      {/* Production plan detail view */}
+      <Modal open={!!detail} title={detail && !detail.loading ? `Production Plan ${detail.order_no}` : 'Loading…'} onClose={() => setDetail(null)} wide
+        footer={<>
+          {detail && !detail.loading && (
+            <div className="flex items-center gap-2 mr-auto">
+              <button onClick={() => { setDetail(null); openProductionEdit(detail) }} className="btn btn-secondary"><Pencil size={14} className="mr-1" /> Edit Plan</button>
+              <button onClick={() => removeProduction(detail)} className="btn btn-danger"><Trash2 size={14} className="mr-1" /> Delete Plan</button>
+              <select value={detail.status || 'Planned'} onChange={(e) => updateDetailStatus(e.target.value)} className="input py-1.5">
+                <option>Planned</option>
+                <option>In Production</option>
+                <option>Completed</option>
+                <option>Cancelled</option>
+              </select>
+            </div>
+          )}
+          <button onClick={() => setDetail(null)} className="btn btn-secondary">Close</button>
+        </>}>
+        {detailLoading || detail?.loading ? <Loading /> : detail && (
+          <div className="space-y-4 text-sm">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div><span className="text-slate-500 block text-xs">Item Code</span><span className="font-medium">{detail.product?.item_code || '—'}</span></div>
+              <div><span className="text-slate-500 block text-xs">Model</span><span className="font-medium">{detail.product?.model || '—'}</span></div>
+              <div><span className="text-slate-500 block text-xs">Category</span><Badge className={detail.product?.category === 'trading' ? 'bg-cyan-100 text-cyan-700' : 'bg-blue-100 text-blue-700'}>{detail.product?.category ? (detail.product.category === 'trading' ? 'Trading' : 'Manufacturing') : '—'}</Badge></div>
+              <div><span className="text-slate-500 block text-xs">Status</span><Badge className={sc[detail.status] || sc['Planned']} dot>{detail.status}</Badge></div>
+              <div><span className="text-slate-500 block text-xs">Customer</span><span className="font-medium">{detail.customer?.name || '—'}</span></div>
+              <div><span className="text-slate-500 block text-xs">Local Order</span><span className="font-medium">{detail.sales_order_no ? <span className="font-mono text-xs">{detail.sales_order_no}</span> : '—'}</span></div>
+              <div><span className="text-slate-500 block text-xs">Schedule Quantity</span><span className="font-medium">{fmtNum(detail.schedule_qty)}</span></div>
+              <div><span className="text-slate-500 block text-xs">Ask Till Date</span><span className="font-medium">{detail.ask_till_date != null ? fmtNum(detail.ask_till_date) : '—'}</span></div>
+              <div><span className="text-slate-500 block text-xs">Production Quantity</span><span className="font-medium text-green-700">{fmtNum(detail.produced_qty)}</span></div>
+              <div><span className="text-slate-500 block text-xs">% Completion</span><CompletionBar value={detail.completion_pct} /></div>
+              <div><span className="text-slate-500 block text-xs">Balance Quantity</span><span className={`font-medium ${detail.balance_qty < 0 ? 'text-red-600' : ''}`}>{fmtNum(detail.balance_qty)}</span></div>
+              <div><span className="text-slate-500 block text-xs">Section</span><span className="font-medium">{detail.section || '—'}</span></div>
+              <div><span className="text-slate-500 block text-xs">Report Date</span><span className="font-medium">{detail.report_date || '—'}</span></div>
+              <div><span className="text-slate-500 block text-xs">Completion Date</span><span className="font-medium">{detail.completion_date || '—'}</span></div>
+              <div className="md:col-span-2"><span className="text-slate-500 block text-xs">Remarks</span><span className="font-medium">{detail.remarks || '—'}</span></div>
+            </div>
+            <div className="border rounded-lg p-3 bg-slate-50">
+              <h4 className="text-sm font-medium mb-2">Record Actual Production Output</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                <div>
+                  <label className="block text-slate-500 text-xs mb-1">Quantity</label>
+                  <input type="number" min="0" value={detailOutput.qty} onChange={(e) => setDetailOutput({ ...detailOutput, qty: e.target.value })} className="input" placeholder="Enter produced qty" />
+                </div>
+                <div>
+                  <label className="block text-slate-500 text-xs mb-1">Date</label>
+                  <input type="date" value={detailOutput.date} onChange={(e) => setDetailOutput({ ...detailOutput, date: e.target.value })} className="input" />
+                </div>
+                <div>
+                  <button onClick={recordDetailOutput} className="btn btn-primary w-full sm:w-auto">Record Output</button>
+                </div>
+              </div>
+            </div>
+            <div>
+              <h4 className="text-sm font-medium mb-2">Production Movements</h4>
+              {detail.movements?.length ? (
+                <Table columns={[
+                  { key: 'production_date', label: 'Production Date', render: (r) => r.production_date || '—' },
+                  { key: 'quantity', label: 'Quantity', render: (r) => <span className="font-semibold tabular-nums">{fmtNum(r.quantity)}</span> },
+                ]} data={detail.movements} keyField="id" dense />
+              ) : <Empty text="No production movements recorded" />}
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Monthly schedule modal (Plan) */}
