@@ -6,6 +6,7 @@ attachment). Keeps the visual design consistent across every channel.
 from __future__ import annotations
 
 import io
+import logging
 from pathlib import Path
 
 from reportlab.lib import colors
@@ -18,6 +19,8 @@ from reportlab.platypus import (
 
 from ..config import BASE_DIR
 from ..models import Quotation
+
+logger = logging.getLogger(__name__)
 
 
 def _asset_path(rel_path: str) -> Path | None:
