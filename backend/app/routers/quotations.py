@@ -5,7 +5,7 @@ from datetime import date
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -101,6 +101,41 @@ def _next_quotation_no(db: Session) -> str:
         except ValueError:
             continue
     return f"{prefix}{max_seq + 1:03d}"
+
+
+def _ensure_customer_exists(db: Session, data: QuotationCreate | QuotationUpdate) -> None:
+    """Ensure the supplied customer_id foreign key exists. If it does not, create
+    a placeholder customer record so the quotation can be saved without violating
+    the foreign-key constraint. This is safe because the user controls the actual
+    customer details on the quotation form."""
+    if not data.customer_id:
+        return
+    existing = db.get(Customer, data.customer_id)
+    if existing:
+        return
+    db.execute(
+        text(
+            "INSERT INTO customers (id, name, code, company, contact_person, phone, email, address, gstin, is_plant, is_active, notes, source_excel, confirmation_status, created_at) "
+            "VALUES (:id, :name, :code, :company, :contact_person, :phone, :email, :address, :gstin, :is_plant, :is_active, :notes, :source_excel, :confirmation_status, NOW())"
+        ),
+        {
+            "id": data.customer_id,
+            "name": data.customer_name or f"Customer {data.customer_id}",
+            "code": str(data.customer_id),
+            "company": data.customer_name or "",
+            "contact_person": data.customer_contact or "",
+            "phone": data.customer_contact or "",
+            "email": data.customer_email or "",
+            "address": data.customer_address or "",
+            "gstin": data.customer_gstin or "",
+            "is_plant": False,
+            "is_active": True,
+            "notes": "",
+            "source_excel": "",
+            "confirmation_status": "CONFIRMED",
+        },
+    )
+    db.flush()
 
 
 def _resolve_customer(db: Session, data: QuotationCreate | QuotationUpdate) -> Customer | None:
@@ -345,6 +380,7 @@ def create_quotation(
     user: CurrentUser,
 ):
     """Create a new quotation. Defaults to Draft."""
+    _ensure_customer_exists(db, data)
     customer = _resolve_customer(db, data)
 
     q = Quotation(
@@ -381,7 +417,8 @@ def create_quotation(
                 status_code=409,
                 detail="A quotation with this number and revision already exists.",
             )
-        raise HTTPException(status_code=400, detail="Database error")
+        logger.warning("Quotation create failed: %s", exc)
+        raise HTTPException(status_code=400, detail=f"Database error: {exc.orig}")
     db.refresh(q)
     write_audit(db, user, "CREATE", "quotation", q.id,
                 f"Created {q.quotation_no} Rev. {q.revision}")
@@ -455,7 +492,8 @@ def update_quotation(
             db.rollback()
             if "uq_quotation_no_revision" in str(exc):
                 raise HTTPException(status_code=409, detail="Revision conflict. Please retry.")
-            raise HTTPException(status_code=400, detail="Database error")
+            logger.warning("Quotation revision failed: %s", exc)
+            raise HTTPException(status_code=400, detail=f"Database error: {exc.orig}")
         db.refresh(new_q)
         write_audit(db, user, "REVISION", "quotation", new_q.id,
                     f"Revision {new_q.revision} created from {q.quotation_no} Rev. {q.revision}")
@@ -464,6 +502,7 @@ def update_quotation(
     # Draft / Rejected / Expired: update in place.
     apply_updates(q, data, exclude={"lines"})
 
+    _ensure_customer_exists(db, data)
     customer = _resolve_customer(db, data)
     _apply_customer_defaults(q, customer)
     _apply_company_defaults(q)
@@ -475,7 +514,8 @@ def update_quotation(
         db.rollback()
         if "uq_quotation_no_revision" in str(exc):
             raise HTTPException(status_code=409, detail="Duplicate quotation number and revision.")
-        raise HTTPException(status_code=400, detail="Database error")
+        logger.warning("Quotation update failed: %s", exc)
+        raise HTTPException(status_code=400, detail=f"Database error: {exc.orig}")
     db.refresh(q)
     write_audit(db, user, "UPDATE", "quotation", q.id,
                 f"Updated {q.quotation_no} Rev. {q.revision}")

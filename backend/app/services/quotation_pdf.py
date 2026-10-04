@@ -192,8 +192,8 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
     style_wrap = ParagraphStyle(
         "WrapCell",
         parent=styles["Normal"],
-        fontSize=8,
-        leading=10,
+        fontSize=7,
+        leading=9,
         wordWrap="CJK",
     )
     style_sign = ParagraphStyle(
@@ -279,23 +279,25 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
             [headers] + rows,
             repeatRows=1,
             colWidths=[
-                8 * mm, 60 * mm, 16 * mm, 12 * mm, 12 * mm,
-                20 * mm, 16 * mm, 20 * mm, 14 * mm,
+                8 * mm, 52 * mm, 17 * mm, 12 * mm, 12 * mm,
+                24 * mm, 16 * mm, 24 * mm, 13 * mm,
             ],
         )
         line_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e3a8a")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 8),
+            ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+            ("FONTSIZE", (0, 1), (-1, -1), 7),
             ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
             ("ALIGN", (0, 0), (2, -1), "LEFT"),
+            ("ALIGN", (2, 0), (2, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ("GRID", (0, 0), (-1, -1), 0.75, colors.HexColor("#94a3b8")),
             ("LEFTPADDING", (0, 0), (-1, -1), 4),
             ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 2),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
         ]))
         story.append(line_table)

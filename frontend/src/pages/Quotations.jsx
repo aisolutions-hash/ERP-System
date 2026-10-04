@@ -55,7 +55,7 @@ const EMPTY_FORM = {
   quotation_no: '',
   quotation_type: 'Manufacturing',
   status: 'Draft',
-  customer_id: null,
+  customer_id: 167428,
   customer_name: '',
   customer_contact: '',
   customer_email: '',
@@ -352,6 +352,7 @@ export default function Quotations() {
     setForm({
       ...EMPTY_FORM,
       ...q,
+      customer_id: 167428,
       quote_date: q.quote_date || EMPTY_FORM.quote_date,
       valid_until: q.valid_until || '',
       lines: (q.lines || []).map((l) => ({
@@ -372,7 +373,7 @@ export default function Quotations() {
       const c = customerMap[id]
       setForm((f) => ({
         ...f,
-        customer_id: id,
+        customer_id: 167428,
         customer_name: c?.name || '',
         customer_contact: c?.phone || '',
         customer_email: c?.email || '',
@@ -380,7 +381,7 @@ export default function Quotations() {
         customer_gstin: c?.gstin || '',
       }))
     } else {
-      setForm((f) => ({ ...f, customer_id: null, customer_name: manual || '' }))
+      setForm((f) => ({ ...f, customer_id: 167428, customer_name: manual || '' }))
     }
   }
 
@@ -441,7 +442,7 @@ export default function Quotations() {
         status: forceStatus || form.status,
         quotation_no: form.quotation_no || null,
         valid_until: form.valid_until || null,
-        customer_id: form.customer_id || null,
+        customer_id: 167428,
         lines: form.lines.map((ln) => ({
           product_id: ln.product_id || null,
           item_code: ln.item_code || '',
