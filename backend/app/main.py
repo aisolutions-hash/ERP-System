@@ -407,15 +407,23 @@ async def spa_html_navigation(request: Request, call_next):
     path = request.url.path
     if (
         request.method == "GET"
-        and "text/html" in accept
         and _FRONTEND_DIST is not None
         and path not in ("/", "/health", "/docs", "/redoc", "/openapi.json")
         and not path.startswith("/assets/")
     ):
         response = await call_next(request)
+        content_type = response.headers.get("content-type", "")
+        # Browser navigations ask for HTML. If the router treated the URL as an
+        # authenticated API call and returned 401/404/JSON, serve the SPA instead.
         if response.status_code in (401, 404):
             index = _FRONTEND_DIST / "index.html"
             if index.exists():
+                log.info("SPA fallback for %s (status %s)", path, response.status_code)
+                return FileResponse(index)
+        if "text/html" in accept and "application/json" in content_type:
+            index = _FRONTEND_DIST / "index.html"
+            if index.exists():
+                log.info("SPA fallback for %s (JSON response to HTML request)", path)
                 return FileResponse(index)
         return response
     return await call_next(request)
