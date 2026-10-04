@@ -16,7 +16,7 @@ from .routers import (
     auth, users, meta, customers, suppliers, products, plants, raw_materials,
     purchases, inventory, production, orders, dispatch, plans, dashboard, reports,
     requirements, salespersons, local_orders, bom, alerts,
-    material_requirements, fulfilment, stock_flow,
+    material_requirements, fulfilment, stock_flow, quotations,
 )
 
 # Schema additions create_all cannot apply to pre-existing tables (idempotent ALTER).
@@ -45,6 +45,8 @@ _COLUMN_MIGRATIONS = [
     ("purchase_order_lines", "uom", "VARCHAR(30) DEFAULT ''"),
     ("purchase_order_lines", "tax_percent", "DOUBLE PRECISION"),
     ("purchase_order_lines", "discount_percent", "DOUBLE PRECISION"),
+    ("email_logs", "quotation_id", "INTEGER"),
+    ("email_logs", "cc", "VARCHAR(500) DEFAULT ''"),
 ]
 
 # Internal stock locations seeded as Plants (Main Store = plant_id NULL).
@@ -101,6 +103,33 @@ def _ensure_order_status_enum() -> None:
         conn.execute(text(f'ALTER TYPE "{type_name}" ADD VALUE \'partially_dispatched\''))
         conn.execute(text(f'ALTER TYPE "{type_name}" ADD VALUE \'ready_for_dispatch\''))
         conn.execute(text(f'ALTER TYPE "{type_name}" ADD VALUE \'purchase_required\''))
+
+
+def _ensure_email_type_enum() -> None:
+    """Add the Quotation value to the email_logs.email_type enum.
+
+    create_all cannot alter an existing Postgres enum, so add the value
+    idempotently (additive; no data touched). No-op on non-Postgres engines.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        type_name = conn.execute(text(
+            "SELECT t.typname FROM pg_attribute a "
+            "JOIN pg_class c ON c.oid = a.attrelid "
+            "JOIN pg_type t ON t.oid = a.atttypid "
+            "WHERE c.relname = 'email_logs' AND a.attname = 'email_type'"
+        )).scalar()
+        if not type_name:
+            return
+        present = conn.execute(text(
+            "SELECT 1 FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+            "WHERE t.typname = :t AND e.enumlabel = :v"
+        ), {"t": type_name, "v": "quotation"}).scalar()
+    if present:
+        return
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(text(f'ALTER TYPE "{type_name}" ADD VALUE \'quotation\''))
 
 
 def _ensure_number_indexes() -> None:
@@ -243,6 +272,11 @@ def on_startup():
         _ensure_order_status_enum()
     except Exception as exc:
         log.error("order-status enum migration failed (recoverable): %s", exc)
+    # Add Quotation email type to the EmailType enum (existing Postgres enum).
+    try:
+        _ensure_email_type_enum()
+    except Exception as exc:
+        log.error("email-type enum migration failed (recoverable): %s", exc)
     # SO/PO numbers became manual business references; drop the legacy UNIQUE
     # indexes on them (idempotent, data untouched). Recreated as plain indexes.
     try:
@@ -312,6 +346,7 @@ app.include_router(reports.router)
 app.include_router(requirements.router)
 app.include_router(salespersons.router)
 app.include_router(local_orders.router)
+app.include_router(quotations.router)
 app.include_router(bom.router)
 app.include_router(alerts.router)
 app.include_router(material_requirements.router)

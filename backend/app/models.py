@@ -90,6 +90,19 @@ class PurchaseStatus(str, enum.Enum):
     cancelled = "Cancelled"
 
 
+class QuotationStatus(str, enum.Enum):
+    draft = "Draft"
+    sent = "Sent"
+    accepted = "Accepted"
+    rejected = "Rejected"
+    expired = "Expired"
+
+
+class QuotationType(str, enum.Enum):
+    manufacturing = "Manufacturing"
+    trading = "Trading"
+
+
 class MovementType(str, enum.Enum):
     receipt = "RECEIPT"
     issue = "ISSUE"
@@ -842,6 +855,7 @@ class MigrationLog(Base):
 class EmailType(str, enum.Enum):
     order_confirmation = "Order Confirmation"
     dispatch_email = "Dispatch Email"
+    quotation = "Quotation"
 
 
 class EmailLog(Base):
@@ -850,7 +864,9 @@ class EmailLog(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     sales_order_id: Mapped[int | None] = mapped_column(ForeignKey("sales_orders.id"), nullable=True, index=True)
     dispatch_id: Mapped[int | None] = mapped_column(ForeignKey("dispatches.id"), nullable=True, index=True)
+    quotation_id: Mapped[int | None] = mapped_column(ForeignKey("quotations.id"), nullable=True, index=True)
     email_type: Mapped[EmailType] = mapped_column(Enum(EmailType), index=True)
+    cc: Mapped[str] = mapped_column(String(500), default="")
     recipient: Mapped[str] = mapped_column(String(160), index=True)
     subject: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(40), index=True, default="pending")  # sent / failed
@@ -859,3 +875,108 @@ class EmailLog(Base):
 
     sales_order: Mapped[SalesOrder | None] = relationship()
     dispatch: Mapped[Dispatch | None] = relationship()
+    quotation: Mapped[Quotation | None] = relationship()
+
+
+class TermsTemplate(Base):
+    """Reusable Terms & Conditions content for quotations."""
+
+    __tablename__ = "terms_templates"
+    __table_args__ = (UniqueConstraint("name", name="uq_terms_template_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), index=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Quotation(Base):
+    """Customer quotation (commercial pre-order document)."""
+
+    __tablename__ = "quotations"
+    __table_args__ = (
+        UniqueConstraint("quotation_no", "revision", name="uq_quotation_no_revision"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    quotation_no: Mapped[str] = mapped_column(String(120), index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    revised_from_id: Mapped[int | None] = mapped_column(ForeignKey("quotations.id"), nullable=True, index=True)
+    quotation_type: Mapped[QuotationType] = mapped_column(Enum(QuotationType), index=True)
+    status: Mapped[QuotationStatus] = mapped_column(
+        Enum(QuotationStatus), default=QuotationStatus.draft, index=True
+    )
+
+    # Customer information (denormalised copies for historical stability)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
+    customer_name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    customer_contact: Mapped[str] = mapped_column(String(60), default="")
+    customer_email: Mapped[str] = mapped_column(String(160), default="")
+    customer_address: Mapped[str] = mapped_column(Text, default="")
+    customer_gstin: Mapped[str] = mapped_column(String(40), default="")
+
+    # Company information shown on the quotation document
+    company_name: Mapped[str] = mapped_column(String(255), default="Kalika Enterprises")
+    company_address: Mapped[str] = mapped_column(Text, default="")
+    company_website: Mapped[str] = mapped_column(String(255), default="")
+    company_phone: Mapped[str] = mapped_column(String(60), default="")
+    contact_email: Mapped[str] = mapped_column(String(160), default="")
+
+    # Quotation metadata
+    quote_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
+    valid_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    approved_by: Mapped[str] = mapped_column(String(160), default="")
+    terms: Mapped[str] = mapped_column(Text, default="")
+
+    # Financial totals (stored to guarantee consistency across views/PDF/email)
+    subtotal: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    discount_total: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    tax_total: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    total_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, onupdate=datetime.utcnow)
+
+    customer: Mapped[Customer | None] = relationship()
+    created_by: Mapped[User | None] = relationship()
+    lines: Mapped[list[QuotationLine]] = relationship(
+        back_populates="quotation", cascade="all, delete-orphan", order_by="QuotationLine.id"
+    )
+    revised_from: Mapped[Quotation | None] = relationship(
+        remote_side="Quotation.id", back_populates="revisions"
+    )
+    revisions: Mapped[list[Quotation]] = relationship(
+        back_populates="revised_from", order_by="Quotation.revision"
+    )
+
+
+class QuotationLine(Base):
+    """One line item on a customer quotation."""
+
+    __tablename__ = "quotation_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    quotation_id: Mapped[int] = mapped_column(ForeignKey("quotations.id"), index=True)
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
+
+    item_code: Mapped[str] = mapped_column(String(120), default="")
+    description: Mapped[str] = mapped_column(String(500), default="")
+    hsn_code: Mapped[str] = mapped_column(String(60), default="")
+    quantity: Mapped[float] = mapped_column(Numeric(14, 3), default=0)
+    uom: Mapped[str] = mapped_column(String(30), default="")
+    price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    lead_time: Mapped[str] = mapped_column(String(120), default="")
+
+    discount_percent: Mapped[float | None] = mapped_column(Float, default=0)
+    tax_percent: Mapped[float | None] = mapped_column(Float, default=0)
+
+    # Stored line totals for consistency
+    basic_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    discount_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    tax_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+
+    quotation: Mapped[Quotation] = relationship(back_populates="lines")
+    product: Mapped[Product | None] = relationship()

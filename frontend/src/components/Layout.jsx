@@ -5,6 +5,7 @@ import {
   Truck, Users, Package, FileDown, ShieldCheck, LogOut, ListChecks,
   AlertTriangle, Store, BellRing, ClipboardList, GitBranch, LayoutGrid,
   ChevronsLeft, ChevronsRight, Menu, X, Layers, ArrowLeftRight, FileSpreadsheet, PackagePlus,
+  FileText,
 } from 'lucide-react'
 import api from '../lib/api'
 import { useAuth } from '../context/AuthContext'
@@ -16,9 +17,15 @@ const SECTIONS = [
     items: [{ to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true }],
   },
   {
-    label: 'Operations',
+    label: 'Sales',
     items: [
       { to: '/orders', label: 'Orders', icon: ShoppingBag },
+      { to: '/quotations', label: 'Quotations', icon: FileText },
+    ],
+  },
+  {
+    label: 'Operations',
+    items: [
       { to: '/dispatch', label: 'Dispatch', icon: Truck },
       { to: '/production', label: 'Production', icon: Factory },
       { to: '/local-orders', label: 'Local Orders', icon: Store },
@@ -62,6 +69,7 @@ const SECTIONS = [
 const TITLE_MAP = {
   '/': { title: 'Dashboard', sub: 'Business overview' },
   '/orders': { title: 'Orders', sub: 'Sales orders & pipeline' },
+  '/quotations': { title: 'Quotations', sub: 'Sales quotations & proposals' },
   '/dispatch': { title: 'Dispatch', sub: 'Customer-wise dispatch tracking' },
   '/production': { title: 'Production', sub: 'Schedule, actual output & reports' },
   '/local-orders': { title: 'Local Orders', sub: 'Local orders & plans' },

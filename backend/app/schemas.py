@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from .models import (
     DispatchStatus, MovementType, OrderStatus, OrderType, PlanType, ProductCategory,
-    ProductionStatus, PurchaseStatus, UserRole,
+    ProductionStatus, PurchaseStatus, QuotationStatus, QuotationType, UserRole,
 )
 
 
@@ -991,3 +991,171 @@ class PageOut(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+# ------------------------- Quotations -------------------------
+class UserMiniOut(ORMModel):
+    id: int
+    username: str
+    full_name: str
+
+
+class QuotationLineIn(BaseModel):
+    id: Optional[int] = None
+    product_id: Optional[int] = None
+    item_code: str = ""
+    description: str = Field(min_length=1, max_length=500)
+    hsn_code: str = ""
+    quantity: float = Field(gt=0)
+    uom: str = ""
+    price: float = Field(ge=0)
+    lead_time: str = ""
+    tax_percent: Optional[float] = None
+    amount: Optional[float] = 0
+
+
+class QuotationLineOut(ORMModel):
+    id: int
+    product_id: Optional[int]
+    product: Optional[ProductOut]
+    item_code: str
+    description: str
+    hsn_code: str
+    quantity: float
+    uom: str
+    price: float
+    lead_time: str
+    tax_percent: Optional[float]
+    amount: float
+
+
+class QuotationBase(BaseModel):
+    quotation_type: QuotationType
+    customer_id: Optional[int] = None
+    customer_name: str = ""
+    customer_contact: str = ""
+    customer_email: str = ""
+    customer_address: str = ""
+    customer_gstin: str = ""
+
+    company_name: str = "KALIKA ENTERPRISES"
+    company_address: str = "Plot No. M-59, MIDC, AHMEDNAGAR"
+    company_website: str = "www.kalikaindia.com"
+    company_phone: str = "+91 9405536016"
+    contact_email: str = "info@kalikaindia.com"
+
+    quotation_no: Optional[str] = None
+    quote_date: date = date.today()
+    valid_until: Optional[date] = None
+    approved_by: str = ""
+    terms: str = ""
+    status: QuotationStatus = QuotationStatus.draft
+    lines: list[QuotationLineIn] = []
+
+
+class QuotationCreate(QuotationBase):
+    pass
+
+
+class QuotationUpdate(QuotationBase):
+    pass
+
+
+class QuotationOut(QuotationBase, ORMModel):
+    id: int
+    quotation_no: str
+    revision: int
+    revised_from_id: Optional[int]
+    subtotal: float
+    tax_total: float
+    total_amount: float
+    lines: list[QuotationLineOut]
+    customer: Optional[CustomerOut]
+    created_by: Optional[UserMiniOut]
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+
+class QuotationListOut(ORMModel):
+    id: int
+    quotation_no: str
+    revision: int
+    quotation_type: QuotationType
+    status: QuotationStatus
+    customer_name: str
+    customer_id: Optional[int]
+    quote_date: date
+    valid_until: Optional[date]
+    total_amount: float
+    created_at: datetime
+
+
+class QuotationStatusIn(BaseModel):
+    status: QuotationStatus
+
+
+class QuotationDuplicateOut(QuotationOut):
+    pass
+
+
+class QuotationRevisionOut(ORMModel):
+    id: int
+    quotation_no: str
+    revision: int
+    status: QuotationStatus
+    quote_date: date
+    total_amount: float
+    created_at: datetime
+    created_by: Optional[UserMiniOut]
+
+
+class QuotationHistoryOut(ORMModel):
+    revisions: list[QuotationRevisionOut]
+    audit: list[Any]
+
+
+class TermsTemplateBase(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    content: str = ""
+    is_default: bool = False
+
+
+class TermsTemplateCreate(TermsTemplateBase):
+    pass
+
+
+class TermsTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    content: Optional[str] = None
+    is_default: Optional[bool] = None
+
+
+class TermsTemplateOut(TermsTemplateBase, ORMModel):
+    id: int
+    created_at: datetime
+
+
+class QuotationEmailSendIn(BaseModel):
+    to: str
+    cc: Optional[str] = ""
+    subject: str
+    message: str
+    attach_pdf: bool = True
+
+
+class QuotationEmailPreviewOut(BaseModel):
+    to: str
+    cc: str
+    subject: str
+    message: str
+
+
+class QuotationEmailHistoryOut(ORMModel):
+    id: int
+    email_type: str
+    recipient: str
+    cc: str
+    subject: str
+    status: str
+    error_message: str
+    sent_at: datetime

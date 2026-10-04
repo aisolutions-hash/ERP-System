@@ -17,9 +17,10 @@ from ..config import settings
 from ..database import get_db
 from ..models import (
     Customer, Dispatch, DispatchLine, Inventory, OrderType, Plant, Product, ProductionMovement,
-    ProductionOrder, PurchaseOrder, RawMaterialBalance, SalesOrder, SalesOrderLine,
+    ProductionOrder, PurchaseOrder, Quotation, RawMaterialBalance, SalesOrder, SalesOrderLine,
     StockMovement, Supplier,
 )
+from ..services.quotation_pdf import build_quotation_pdf_bytes
 from datetime import date
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -681,6 +682,26 @@ def order_pdf(
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=order_{safe_name}.pdf"},
+    )
+
+
+@router.get("/quotations/{quotation_id}/pdf")
+def quotation_pdf(
+    quotation_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    _: CurrentUser,
+):
+    """Download a single quotation as a branded PDF."""
+    q = db.get(Quotation, quotation_id)
+    if not q:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+
+    pdf = build_quotation_pdf_bytes(q)
+    safe_name = "".join(c for c in (q.quotation_no or str(q.id)) if c.isalnum() or c in "-_").strip() or str(q.id)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=quotation_{safe_name}_rev{q.revision}.pdf"},
     )
 
 

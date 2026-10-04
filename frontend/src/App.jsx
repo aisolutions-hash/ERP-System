@@ -18,6 +18,7 @@ import Fulfilment from './pages/Fulfilment'
 import Alerts from './pages/Alerts'
 import Customers from './pages/Customers'
 import Suppliers from './pages/Suppliers'
+import Quotations from './pages/Quotations'
 import Reports from './pages/Reports'
 import Users from './pages/Users'
 import StockMovements from './pages/StockMovements'
@@ -59,6 +60,7 @@ function App() {
             <Route path="local-orders" element={<LocalOrders />} />
             <Route path="customers" element={<Customers />} />
             <Route path="suppliers" element={<Suppliers />} />
+            <Route path="quotations" element={<Quotations />} />
             <Route path="reports" element={<Reports />} />
             <Route path="users" element={<Users />} />
           </Route>
