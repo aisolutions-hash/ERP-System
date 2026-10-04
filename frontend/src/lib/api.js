@@ -11,6 +11,12 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  // Prevent the browser from serving a stale HTML fallback response for API
+  // GET requests (e.g. /quotations) that was cached before the backend route
+  // existed. FastAPI ignores the extra query parameter.
+  if (config.method?.toLowerCase() === 'get') {
+    config.params = { ...config.params, _t: Date.now() }
+  }
   return config
 })
 

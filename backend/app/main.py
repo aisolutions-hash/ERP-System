@@ -429,6 +429,26 @@ async def spa_html_navigation(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def cache_control_headers(request: Request, call_next):
+    """Prevent browsers from caching API responses as if they were HTML.
+
+    SPA routes and API routes share the same origin and often the same URL
+    prefix (e.g. /quotations). Without explicit cache headers, an old HTML
+    fallback response can be served from the browser cache for a later JSON
+    API call, causing `.filter is not a function` runtime errors. Static
+    assets are excluded so JS/CSS files remain cacheable.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith("/assets/"):
+        response.headers["Cache-Control"] = (
+            "no-store, no-cache, must-revalidate, max-age=0"
+        )
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 if _FRONTEND_DIST is not None:
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
 
