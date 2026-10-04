@@ -399,7 +399,9 @@ async def spa_html_navigation(request: Request, call_next):
     before the SPA catch-all, so a hard refresh on a page URL would otherwise
     hit an authenticated API route and return 401 {"detail":"Not authenticated"}.
     Browser navigations send Accept: text/html; API calls from the SPA send
-    Accept: application/json, so this only affects genuine page loads.
+    Accept: application/json. To stay robust against any Accept-header quirks,
+    we let the request reach the router first and only serve index.html when the
+    router responds with 401 or 404.
     """
     accept = request.headers.get("accept", "")
     path = request.url.path
@@ -410,9 +412,12 @@ async def spa_html_navigation(request: Request, call_next):
         and path not in ("/", "/health", "/docs", "/redoc", "/openapi.json")
         and not path.startswith("/assets/")
     ):
-        index = _FRONTEND_DIST / "index.html"
-        if index.exists():
-            return FileResponse(index)
+        response = await call_next(request)
+        if response.status_code in (401, 404):
+            index = _FRONTEND_DIST / "index.html"
+            if index.exists():
+                return FileResponse(index)
+        return response
     return await call_next(request)
 
 
