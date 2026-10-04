@@ -248,6 +248,10 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     log.info("Kalika ERP v%s starting …", settings.APP_VERSION)
+    if _FRONTEND_DIST is not None:
+        log.info("Frontend dist resolved to: %s", _FRONTEND_DIST)
+    else:
+        log.warning("Frontend dist not found; SPA refresh may not work.")
     try:
         host = settings.database_url.split("@")[-1].split("?")[0] if "@" in settings.database_url else "local"
         log.info("Database target: %s", host)
@@ -357,10 +361,27 @@ app.include_router(stock_flow.dispatch_router)
 
 
 # Serve the built React app in production mode (frontend/dist mounted next to backend).
-_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+def _resolve_frontend_dist() -> Path | None:
+    """Locate the built frontend dist folder. Tries several common layouts so
+    SPA refresh works regardless of how the container is started."""
+    candidates = [
+        Path(__file__).resolve().parent.parent / "frontend" / "dist",
+        Path.cwd() / "frontend" / "dist",
+        Path("/app") / "frontend" / "dist",
+        Path("/workspace") / "frontend" / "dist",
+    ]
+    for p in candidates:
+        if (p / "index.html").is_file():
+            return p
+    return None
+
+
+_FRONTEND_DIST = _resolve_frontend_dist()
 
 
 def _serve_frontend(path: str):
+    if _FRONTEND_DIST is None:
+        return RedirectResponse(url="/docs")
     index = _FRONTEND_DIST / "index.html"
     if not index.exists():
         return RedirectResponse(url="/docs")
@@ -385,7 +406,7 @@ async def spa_html_navigation(request: Request, call_next):
     if (
         request.method == "GET"
         and "text/html" in accept
-        and _FRONTEND_DIST.exists()
+        and _FRONTEND_DIST is not None
         and path not in ("/", "/health", "/docs", "/redoc", "/openapi.json")
         and not path.startswith("/assets/")
     ):
@@ -395,7 +416,7 @@ async def spa_html_navigation(request: Request, call_next):
     return await call_next(request)
 
 
-if _FRONTEND_DIST.exists():
+if _FRONTEND_DIST is not None:
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
