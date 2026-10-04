@@ -20,13 +20,33 @@ from ..models import (
     ProductionOrder, PurchaseOrder, Quotation, RawMaterialBalance, SalesOrder, SalesOrderLine,
     StockMovement, Supplier,
 )
-from ..services.quotation_pdf import build_quotation_pdf_bytes
+from ..services.quotation_pdf import build_quotation_pdf_bytes, _asset_path
 from datetime import date
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 EXPORT_DIR = settings.report_dir
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@router.get("/debug/pdf-assets")
+def debug_pdf_assets():
+    """Temporary diagnostic endpoint to verify PDF image assets in the deployed container."""
+    try:
+        from PIL import Image as PILImage
+        pillow_info = {"available": True, "version": PILImage.__version__}
+    except Exception as exc:
+        pillow_info = {"available": False, "error": str(exc)}
+
+    assets = {}
+    for name in ["Kalika_logo.png", "assets/stamp.png"]:
+        p = _asset_path(name)
+        assets[name] = {
+            "found": bool(p),
+            "path": str(p) if p else None,
+            "size_bytes": p.stat().st_size if p else None,
+        }
+    return {"pillow": pillow_info, "assets": assets}
 
 
 def _csv_response(headers, rows, filename):

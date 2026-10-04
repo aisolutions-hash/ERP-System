@@ -40,6 +40,7 @@ def _asset_path(rel_path: str) -> Path | None:
     ]
     for p in candidates:
         if p.exists():
+            logger.info("PDF asset resolved: %s -> %s", rel_path, p)
             return p
     logger.warning("PDF asset not found: %s (tried: %s)", rel_path, [str(c) for c in candidates])
     return None
@@ -90,8 +91,8 @@ def _header_footer(canvas, doc, company: dict, q: Quotation):
                 str(logo_path), 16 * mm, height - 26 * mm,
                 width=30 * mm, height=14 * mm, preserveAspectRatio=True, mask="auto",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to draw logo in PDF header: %s", exc)
 
     # Company info block
     canvas.setFont("Helvetica-Bold", 12)
@@ -332,7 +333,8 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
     if stamp_path:
         try:
             stamp_img = Image(str(stamp_path), width=32 * mm, height=32 * mm)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to load stamp image for PDF: %s", exc)
             stamp_img = None
 
     signatory_inner = Table(
