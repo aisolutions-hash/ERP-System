@@ -5,11 +5,16 @@ attachment). Keeps the visual design consistent across every channel.
 """
 from __future__ import annotations
 
+import base64
 import io
 import logging
+import os
+import tempfile
 from pathlib import Path
 
+from PIL import Image as PILImage
 from reportlab.lib import colors
+from reportlab.lib.utils import ImageReader
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -17,10 +22,16 @@ from reportlab.platypus import (
     Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
+from ..assets.images import LOGO_PNG_B64, STAMP_PNG_B64
 from ..config import BASE_DIR
 from ..models import Quotation
 
 logger = logging.getLogger(__name__)
+
+
+def _b64_image_reader(b64_string: str) -> ImageReader:
+    """Create a ReportLab ImageReader from a base64-encoded PNG."""
+    return ImageReader(io.BytesIO(base64.b64decode(b64_string)))
 
 
 def _asset_path(rel_path: str) -> Path | None:
@@ -83,16 +94,23 @@ def _header_footer(canvas, doc, company: dict, q: Quotation):
     canvas.saveState()
     width, height = A4
 
-    # Logo
-    logo_path = _asset_path("Kalika_logo.png")
-    if logo_path:
-        try:
-            canvas.drawImage(
-                str(logo_path), 16 * mm, height - 26 * mm,
-                width=30 * mm, height=14 * mm, preserveAspectRatio=True, mask="auto",
-            )
-        except Exception as exc:
-            logger.warning("Failed to draw logo in PDF header: %s", exc)
+    # Logo: prefer embedded base64 asset so it works in any deployment.
+    try:
+        canvas.drawImage(
+            _b64_image_reader(LOGO_PNG_B64), 16 * mm, height - 26 * mm,
+            width=30 * mm, height=14 * mm, preserveAspectRatio=True, mask="auto",
+        )
+    except Exception as exc:
+        logger.warning("Failed to draw embedded logo: %s", exc)
+        logo_path = _asset_path("Kalika_logo.png")
+        if logo_path:
+            try:
+                canvas.drawImage(
+                    str(logo_path), 16 * mm, height - 26 * mm,
+                    width=30 * mm, height=14 * mm, preserveAspectRatio=True, mask="auto",
+                )
+            except Exception as exc2:
+                logger.warning("Failed to draw logo in PDF header: %s", exc2)
 
     # Company info block
     canvas.setFont("Helvetica-Bold", 12)
@@ -328,14 +346,21 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
         story.append(Paragraph(q.terms.replace("\n", "<br/>"), style_small))
 
     # Authorized signatory block: stamp with text directly below it
-    stamp_path = _asset_path("assets/stamp.png")
     stamp_img = None
-    if stamp_path:
-        try:
-            stamp_img = Image(str(stamp_path), width=32 * mm, height=32 * mm)
-        except Exception as exc:
-            logger.warning("Failed to load stamp image for PDF: %s", exc)
-            stamp_img = None
+    try:
+        fd, tmp_stamp_path = tempfile.mkstemp(suffix=".png")
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(base64.b64decode(STAMP_PNG_B64))
+        stamp_img = Image(tmp_stamp_path, width=32 * mm, height=32 * mm)
+    except Exception as exc:
+        logger.warning("Failed to load embedded stamp: %s", exc)
+        stamp_path = _asset_path("assets/stamp.png")
+        if stamp_path:
+            try:
+                stamp_img = Image(str(stamp_path), width=32 * mm, height=32 * mm)
+            except Exception as exc2:
+                logger.warning("Failed to load stamp image for PDF: %s", exc2)
+                stamp_img = None
 
     signatory_inner = Table(
         [
