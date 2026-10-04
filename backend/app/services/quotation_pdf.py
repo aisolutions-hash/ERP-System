@@ -21,8 +21,15 @@ from ..models import Quotation
 
 
 def _asset_path(rel_path: str) -> Path | None:
-    """Resolve a public asset, preferring the built frontend dist if present."""
+    """Resolve a public asset. Backend-bundled assets are checked first so the
+    PDF builder works even when frontend/dist is missing or in a different
+    location in the deployed container."""
+    module_dir = Path(__file__).resolve().parent
     candidates = [
+        # Backend-bundled copy (most reliable in production).
+        module_dir / "assets" / rel_path,
+        module_dir / "assets" / Path(rel_path).name,
+        # Frontend build / public folders (local dev and full-stack builds).
         BASE_DIR / "frontend" / "dist" / rel_path,
         BASE_DIR / "frontend" / "public" / rel_path,
         BASE_DIR / "frontend" / "dist" / "assets" / Path(rel_path).name,
@@ -31,6 +38,7 @@ def _asset_path(rel_path: str) -> Path | None:
     for p in candidates:
         if p.exists():
             return p
+    logger.warning("PDF asset not found: %s (tried: %s)", rel_path, [str(c) for c in candidates])
     return None
 
 
