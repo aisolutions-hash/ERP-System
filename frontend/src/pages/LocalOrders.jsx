@@ -768,6 +768,40 @@ export default function LocalOrders() {
             <Table columns={detailLineCols} data={detail.lines || []} keyField="id" stickyColumns={['description']} dense />
 
             <div className="flex items-center gap-2 mt-5 mb-2">
+              <ClipboardList size={15} className="text-violet-500" />
+              <h4 className="font-semibold text-slate-800 text-sm">Production Plans</h4>
+              <Badge className="bg-slate-100 text-slate-600 ml-2">{(detail.production_plans || []).length} plan(s)</Badge>
+            </div>
+            {(detail.production_plans || []).length === 0 ? <Empty text="No production plans yet" /> : (
+              <div className="overflow-x-auto mb-4">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-[10px] uppercase tracking-wide text-slate-400 border-b border-gray-100">
+                      <th className="py-1.5 pr-3">Item</th>
+                      <th className="py-1.5 pr-3 text-right">Schedule</th>
+                      <th className="py-1.5 pr-3 text-right">Produced</th>
+                      <th className="py-1.5 pr-3 text-right">Balance</th>
+                      <th className="py-1.5 pr-3 text-right">% Comp</th>
+                      <th className="py-1.5">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(detail.production_plans || []).map((p) => (
+                      <tr key={p.id} className="border-b border-gray-50">
+                        <td className="py-1.5 pr-3 font-medium text-slate-700">{p.line_description || p.product_model || '—'}</td>
+                        <td className="py-1.5 pr-3 text-right">{fmtNum(p.schedule_qty)}</td>
+                        <td className="py-1.5 pr-3 text-right">{fmtNum(p.produced_qty)}</td>
+                        <td className="py-1.5 pr-3 text-right">{fmtNum(p.balance_qty)}</td>
+                        <td className="py-1.5 pr-3 text-right">{fmtNum((p.completion_pct || 0) * 100)}%</td>
+                        <td className="py-1.5"><StatusBadge status={p.status} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 mt-5 mb-2">
               <Truck size={15} className="text-amber-500" />
               <h4 className="font-semibold text-slate-800 text-sm">Date-wise Dispatch History</h4>
               <Badge className="bg-slate-100 text-slate-600 ml-2">{flattenedHistory.length} entry(ies)</Badge>

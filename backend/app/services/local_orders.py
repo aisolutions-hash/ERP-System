@@ -20,8 +20,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..models import (
-    Dispatch, DispatchLine, Inventory, OrderStatus, OrderType, Plant, SalesOrder,
-    SalesOrderLine,
+    Dispatch, DispatchLine, Inventory, OrderStatus, OrderType, Plant, ProductionOrder,
+    ProductionStatus, SalesOrder, SalesOrderLine,
 )
 
 LOCAL_TYPES = ("TRADING", "MANUFACTURING")
@@ -266,6 +266,71 @@ def sync_local_order_status(db: Session, o: SalesOrder) -> None:
         db.flush()
 
 
+def sync_local_order_production_completion(db: Session, sales_order_id: int) -> None:
+    """Synchronize a Manufacturing Local Order status with its production plans.
+
+    If the Local Order has per-line ProductionOrders, it is marked
+    Production Completed only when every manufacturing line has a completed
+    plan. If any per-line plan is not completed, the order is moved back to
+    Production In Process when it was previously Production Completed.
+
+    Historical aggregate plans without a line link are handled as a fallback
+    for existing records: they are ignored when per-line plans exist, and
+    treated as covering the whole order when no per-line plans are present.
+    """
+    so = db.get(SalesOrder, sales_order_id)
+    if so is None:
+        return
+    if so.order_type != OrderType.local:
+        return
+    if so.status == OrderStatus.cancelled:
+        return
+    if normalize_local_type(so.local_order_type) != "MANUFACTURING":
+        return
+    # Only toggle between these two production-specific statuses.
+    if so.status not in (OrderStatus.production_in_process, OrderStatus.production_completed):
+        return
+
+    per_line_plans = db.scalars(
+        select(ProductionOrder)
+        .where(
+            ProductionOrder.sales_order_id == so.id,
+            ProductionOrder.sales_order_line_id.is_not(None),
+        )
+    ).all()
+
+    if per_line_plans:
+        line_ids = {ln.id for ln in so.lines}
+        if not line_ids:
+            return
+        planned_line_ids = {po.sales_order_line_id for po in per_line_plans}
+        all_completed = all(po.status == ProductionStatus.completed for po in per_line_plans)
+        all_lines_have_plan = planned_line_ids == line_ids
+        if all_lines_have_plan and all_completed:
+            target = OrderStatus.production_completed
+        else:
+            target = OrderStatus.production_in_process
+    else:
+        aggregate_plans = db.scalars(
+            select(ProductionOrder)
+            .where(
+                ProductionOrder.sales_order_id == so.id,
+                ProductionOrder.sales_order_line_id.is_(None),
+            )
+        ).all()
+        if not aggregate_plans:
+            return
+        target = (
+            OrderStatus.production_completed
+            if all(po.status == ProductionStatus.completed for po in aggregate_plans)
+            else OrderStatus.production_in_process
+        )
+
+    if so.status != target:
+        so.status = target
+        db.flush()
+
+
 def order_dispatches(db: Session, o: SalesOrder) -> list[dict]:
     """Date-wise actual dispatch history for the local order (never rewritten)."""
     rows = db.scalars(
@@ -325,6 +390,33 @@ def serialize_local_order(db: Session, o: SalesOrder) -> dict:
     main_stock = sum(float(l["available_main"] or 0) for l in ck["lines"])
     pending = max(order_qty - total, 0.0)
     transfer_qty = max(min(pending - dispatch_stock, main_stock), 0.0)
+
+    # Production plans linked to this manufacturing local order, including the
+    # specific order line each plan belongs to.
+    production_plans = []
+    if normalize_local_type(o.local_order_type) == "MANUFACTURING":
+        plans = db.scalars(
+            select(ProductionOrder)
+            .where(ProductionOrder.sales_order_id == o.id)
+            .order_by(ProductionOrder.id)
+            .options(selectinload(ProductionOrder.sales_order_line))
+        ).all()
+        for po in plans:
+            line = po.sales_order_line
+            production_plans.append({
+                "id": po.id,
+                "order_no": po.order_no,
+                "product_id": po.product_id,
+                "product_model": po.product.model if po.product else "",
+                "line_id": po.sales_order_line_id,
+                "line_description": line.description if line else (po.product.model if po.product else ""),
+                "schedule_qty": float(po.schedule_qty or 0),
+                "produced_qty": float(po.produced_qty or 0),
+                "balance_qty": float(po.balance_qty or 0),
+                "completion_pct": float(po.completion_pct or 0),
+                "status": po.status.value,
+            })
+
     return {
         "id": o.id,
         "order_no": o.order_no,
@@ -357,6 +449,7 @@ def serialize_local_order(db: Session, o: SalesOrder) -> dict:
             "transfer_qty": transfer_qty,
             "transfer_required": transfer_qty > 0,
         },
+        "production_plans": production_plans,
         "dispatches": order_dispatches(db, o),
         "created_at": o.created_at,
     }

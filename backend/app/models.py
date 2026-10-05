@@ -505,6 +505,7 @@ class ProductionOrder(Base):
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
     salesperson_id: Mapped[int | None] = mapped_column(ForeignKey("salespersons.id"), nullable=True)
     sales_order_id: Mapped[int | None] = mapped_column(ForeignKey("sales_orders.id"), nullable=True, index=True)
+    sales_order_line_id: Mapped[int | None] = mapped_column(ForeignKey("sales_order_lines.id"), nullable=True, index=True)
     section: Mapped[str] = mapped_column(String(120), default="", index=True)
     schedule_qty: Mapped[float] = mapped_column(Float, default=0)
     ask_till_date: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -530,6 +531,7 @@ class ProductionOrder(Base):
     customer: Mapped[Customer | None] = relationship()
     salesperson: Mapped[Salesperson | None] = relationship()
     sales_order: Mapped[SalesOrder | None] = relationship()
+    sales_order_line: Mapped["SalesOrderLine | None"] = relationship("SalesOrderLine")
     movements: Mapped[list[ProductionMovement]] = relationship(
         back_populates="production_order", cascade="all, delete-orphan"
     )

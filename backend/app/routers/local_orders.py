@@ -41,7 +41,7 @@ from ..services.import_common import (
 )
 from ..services.local_orders import (
     check_ready, normalize_local_type, serialize_local_order,
-    sync_local_order_status,
+    sync_local_order_production_completion, sync_local_order_status,
 )
 from ..services.stock_service import resolve_or_create_product
 from ..routers.production import _resolve_production_product, _next_no as _prod_next_no
@@ -57,46 +57,24 @@ def _local_no(db: Session) -> str:
     return f"{prefix}{n + 1:03d}"
 
 
-def _ensure_local_order_production_plan(db: Session, o: SalesOrder) -> ProductionOrder | None:
-    """Create a ProductionOrder for a Manufacturing Local Order when it reaches
-    'Production In Progress' status. Reuse an existing linked plan if present."""
+def _ensure_local_order_production_plan(db: Session, o: SalesOrder) -> list[ProductionOrder]:
+    """Create one ProductionOrder per Manufacturing Local Order line when the
+    order reaches 'Production In Progress' status.
+
+    Existing per-line plans are reused. Missing plans are created for new lines
+    or lines that were added after production started. Aggregate plans without
+    a line link are left untouched for historical compatibility.
+    """
+    created: list[ProductionOrder] = []
     if o.order_type != OrderType.local:
-        return None
+        return created
     if normalize_local_type(o.local_order_type) != "MANUFACTURING":
-        return None
+        return created
     if o.status != OrderStatus.production_in_process:
-        return None
-    existing = db.scalars(
-        select(ProductionOrder).where(ProductionOrder.sales_order_id == o.id).limit(1)
-    ).first()
-    if existing:
-        return existing
+        return created
 
-    # Resolve a product from the first resolvable line.
-    product = None
-    for ln in o.lines:
-        if ln.product_id:
-            product = db.get(Product, ln.product_id)
-        if product is None:
-            product = _resolve_production_product(
-                db, ln.item_code or "", ln.description or ln.model or "", category="Manufacturing"
-            )
-        if product:
-            break
-    if product is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot create production plan: local order has no product or item code/description",
-        )
-
-    # Manufacturing plans must be classified as finished/MANUFACTURED.
-    if product.category != ProductCategory.finished or product.source_type != ProductSourceType.manufactured:
-        product.category = ProductCategory.finished
-        product.source_type = ProductSourceType.manufactured
-        db.flush()
-
-    # Schedule / pending quantity = total order quantity.
-    schedule_qty = sum(float(ln.quantity or 0) for ln in o.lines)
+    # Newly added lines need persisted ids before we can link plans to them.
+    db.flush()
 
     customer_id = o.customer_id
     if not customer_id and o.customer_name:
@@ -104,21 +82,64 @@ def _ensure_local_order_production_plan(db: Session, o: SalesOrder) -> Productio
         if c:
             customer_id = c.id
 
-    po = ProductionOrder(
-        order_no=_prod_next_no(db),
-        product_id=product.id,
-        customer_id=customer_id,
-        sales_order_id=o.id,
-        schedule_qty=schedule_qty,
-        produced_qty=0,
-        opening_stock=0,
-        status=ProductionStatus.in_production,
-        report_date=date.today(),
-        remarks=f"Auto-created from Local Order {o.order_no}",
-    )
-    db.add(po)
-    db.flush()
-    return po
+    for ln in o.lines:
+        # Resolve the product for this specific line.
+        product = None
+        if ln.product_id:
+            product = db.get(Product, ln.product_id)
+        if product is None:
+            product = _resolve_production_product(
+                db, ln.item_code or "", ln.description or ln.model or "", category="Manufacturing"
+            )
+        if product is None:
+            # Skip lines that cannot be tied to a product; do not block the order.
+            continue
+
+        # Manufacturing plans must be classified as finished/MANUFACTURED.
+        if product.category != ProductCategory.finished or product.source_type != ProductSourceType.manufactured:
+            product.category = ProductCategory.finished
+            product.source_type = ProductSourceType.manufactured
+            db.flush()
+
+        existing = db.scalars(
+            select(ProductionOrder)
+            .where(
+                ProductionOrder.sales_order_id == o.id,
+                ProductionOrder.sales_order_line_id == ln.id,
+            )
+            .limit(1)
+        ).first()
+
+        if existing:
+            # Only safe schedule sync: update the target when no actual production
+            # has been recorded yet. Never overwrite active production history.
+            if existing.produced_qty == 0 and not existing.movements:
+                existing.schedule_qty = float(ln.quantity or 0)
+                existing.balance_qty = existing.schedule_qty
+            created.append(existing)
+            continue
+
+        po = ProductionOrder(
+            order_no=_prod_next_no(db),
+            product_id=product.id,
+            customer_id=customer_id,
+            sales_order_id=o.id,
+            sales_order_line_id=ln.id,
+            schedule_qty=float(ln.quantity or 0),
+            produced_qty=0,
+            opening_stock=0,
+            balance_qty=float(ln.quantity or 0),
+            status=ProductionStatus.in_production,
+            report_date=date.today(),
+            remarks=f"Auto-created from Local Order {o.order_no} line {ln.id}",
+        )
+        db.add(po)
+        db.flush()
+        created.append(po)
+
+    if created:
+        sync_local_order_production_completion(db, o.id)
+    return created
 
 
 def _t(v) -> str:
@@ -269,6 +290,15 @@ def _apply_lines(db: Session, o: SalesOrder, raw_lines) -> None:
         if used:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                 detail=f"Line '{ln.description or ln.id}' already has dispatch entries and cannot be removed")
+        has_production_plan = db.scalar(
+            select(func.count()).select_from(ProductionOrder)
+            .where(ProductionOrder.sales_order_line_id == ln.id)
+        ) or 0
+        if has_production_plan:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Line '{ln.description or ln.id}' has a production plan and cannot be removed",
+            )
         db.delete(ln)
 
 
@@ -712,7 +742,7 @@ def delete_local_order(order_id: int, db: Annotated[Session, Depends(get_db)],
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="Cannot delete local order: it has dispatches.")
     db.execute(update(ProductionOrder).where(ProductionOrder.sales_order_id == o.id)
-               .values(sales_order_id=None))
+               .values(sales_order_id=None, sales_order_line_id=None))
     db.execute(update(Plan).where(Plan.sales_order_id == o.id).values(sales_order_id=None))
     db.execute(delete(PurchaseRequirement).where(PurchaseRequirement.sales_order_id == o.id))
     db.delete(o)

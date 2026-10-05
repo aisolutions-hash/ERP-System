@@ -476,6 +476,8 @@ class ProductionOrderCreate(BaseModel):
     opening_stock: float = 0
     customer_id: Optional[int] = None
     customer_name: str = ""
+    sales_order_id: Optional[int] = None
+    sales_order_line_id: Optional[int] = None
     status: ProductionStatus = ProductionStatus.planned
     category: str = "Manufacturing"
     start_date: Optional[date] = None
@@ -493,6 +495,8 @@ class ProductionOrderUpdate(BaseModel):
     opening_stock: Optional[float] = None
     customer_id: Optional[int] = None
     customer_name: Optional[str] = None
+    sales_order_id: Optional[int] = None
+    sales_order_line_id: Optional[int] = None
     status: Optional[ProductionStatus] = None
     start_date: Optional[date] = None
     completion_date: Optional[date] = None
@@ -523,6 +527,8 @@ class ProductionOrderOut(ORMModel):
     completion_date: Optional[date]
     report_date: date
     remarks: str
+    sales_order_id: Optional[int] = None
+    sales_order_line_id: Optional[int] = None
     product: Optional[ProductOut] = None
     movements: list[ProductionMovementOut] = []
 

@@ -9,7 +9,7 @@ from ..auth import CurrentUser, AllStaff, ManagerOrAdmin
 from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
 from ..models import (
-    Customer, MovementType, OrderStatus, OrderType, Plant, Product, ProductCategory,
+    Customer, MovementType, Plant, Product, ProductCategory,
     ProductionMovement, ProductionOrder, ProductionStatus, SalesOrder, StockMovement,
     Plan, PlanType, ProductSourceType,
 )
@@ -17,6 +17,7 @@ from ..schemas import ProductionOrderCreate, ProductionOrderOut, ProductionOrder
 from ..services.business import sync_purchase_shortages
 from ..services.customers import get_or_create_customer
 from ..services.reorder_alerts import refresh_reorder_alert
+from ..services.local_orders import sync_local_order_production_completion
 from ..services.stock_service import (
     apply_movement, reconvert_document, reverse_and_remove_ref,
     _unique_blank_model,
@@ -45,11 +46,19 @@ def _serialize_po(db: Session, o: ProductionOrder) -> dict:
     product = o.product
     customer = o.customer
     sales_order = o.sales_order
+    line = o.sales_order_line
     return {
         "id": o.id, "order_no": o.order_no, "product_id": o.product_id,
         "customer_id": o.customer_id,
         "sales_order_id": o.sales_order_id,
         "sales_order_no": sales_order.order_no if sales_order else None,
+        "sales_order_line_id": o.sales_order_line_id,
+        "sales_order_line": {
+            "id": line.id,
+            "description": line.description,
+            "item_code": line.item_code,
+            "quantity": line.quantity,
+        } if line else None,
         "section": o.section, "schedule_qty": o.schedule_qty, "ask_till_date": o.ask_till_date,
         "produced_qty": o.produced_qty, "completion_pct": o.completion_pct,
         "balance_qty": o.balance_qty, "opening_stock": o.opening_stock,
@@ -79,20 +88,12 @@ def _recalc_status(o: ProductionOrder):
 
 
 def _sync_completed_to_local_order(db: Session, o: ProductionOrder):
-    """When a ProductionOrder linked to a Manufacturing Local Order is completed,
-    update the Local Order status to Production Completed."""
+    """When a ProductionOrder linked to a Manufacturing Local Order changes,
+    re-evaluate whether all per-line production plans are completed and update
+    the Local Order status accordingly."""
     if not o.sales_order_id:
         return
-    so = db.get(SalesOrder, o.sales_order_id)
-    if so is None or so.order_type != OrderType.local:
-        return
-    if so.status == OrderStatus.cancelled:
-        return
-    if (so.local_order_type or "").upper() != "MANUFACTURING":
-        return
-    if so.status != OrderStatus.production_completed:
-        so.status = OrderStatus.production_completed
-        db.flush()
+    sync_local_order_production_completion(db, o.sales_order_id)
 
 
 def _stocked(db: Session, order_id: int) -> bool:
@@ -166,6 +167,8 @@ def create_production(body: ProductionOrderCreate, db: Annotated[Session, Depend
     o = ProductionOrder(
         order_no=body.order_no or _next_no(db), product_id=product_id,
         customer_id=customer_id,
+        sales_order_id=body.sales_order_id,
+        sales_order_line_id=body.sales_order_line_id,
         section=body.section, schedule_qty=body.schedule_qty, ask_till_date=body.ask_till_date,
         produced_qty=body.produced_qty, opening_stock=body.opening_stock,
         status=body.status, start_date=body.start_date, completion_date=body.completion_date,

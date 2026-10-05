@@ -47,6 +47,7 @@ _COLUMN_MIGRATIONS = [
     ("purchase_order_lines", "discount_percent", "DOUBLE PRECISION"),
     ("email_logs", "quotation_id", "INTEGER"),
     ("email_logs", "cc", "VARCHAR(500) DEFAULT ''"),
+    ("production_orders", "sales_order_line_id", "INTEGER"),
 ]
 
 # Internal stock locations seeded as Plants (Main Store = plant_id NULL).
