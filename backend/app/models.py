@@ -494,6 +494,46 @@ class CustomerDispatchLine(Base):
 
 
 # ---------------------------------------------------------------------------
+# Packaging List
+# ---------------------------------------------------------------------------
+class PackagingList(Base):
+    __tablename__ = "packaging_lists"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    list_no: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    list_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True, index=True)
+    customer_name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    item_description: Mapped[str] = mapped_column(Text, default="")
+    less_default: Mapped[float] = mapped_column(Float, default=0)
+    total_gross_wt: Mapped[float] = mapped_column(Float, default=0)
+    total_less: Mapped[float] = mapped_column(Float, default=0)
+    total_net_wt: Mapped[float] = mapped_column(Float, default=0)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    customer: Mapped[Customer | None] = relationship()
+    created_by: Mapped["User | None"] = relationship("User")
+    lines: Mapped[list["PackagingListLine"]] = relationship(
+        back_populates="packaging_list", cascade="all, delete-orphan"
+    )
+
+
+class PackagingListLine(Base):
+    __tablename__ = "packaging_list_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    packaging_list_id: Mapped[int] = mapped_column(ForeignKey("packaging_lists.id"), index=True)
+    sr_no: Mapped[int] = mapped_column(Integer, default=0)
+    gross_wt: Mapped[float] = mapped_column(Float, default=0)
+    less: Mapped[float] = mapped_column(Float, default=0)
+    net_wt: Mapped[float] = mapped_column(Float, default=0)
+
+    packaging_list: Mapped[PackagingList] = relationship(back_populates="lines")
+
+
+# ---------------------------------------------------------------------------
 # Production
 # ---------------------------------------------------------------------------
 class ProductionOrder(Base):

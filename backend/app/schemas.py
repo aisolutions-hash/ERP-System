@@ -992,6 +992,63 @@ class EmailHistoryOut(BaseModel):
     sent_at: datetime
 
 
+# ---------------------------------------------------------------------------
+# Packaging List
+# ---------------------------------------------------------------------------
+class PackagingListLineIn(BaseModel):
+    id: Optional[int] = None
+    sr_no: int = 0
+    gross_wt: float = 0
+    # None means "use the list-level default less"
+    less: Optional[float] = None
+    net_wt: float = 0
+
+
+class PackagingListLineOut(BaseModel):
+    id: int
+    sr_no: int
+    gross_wt: float
+    less: float
+    net_wt: float
+
+
+class PackagingListCreate(BaseModel):
+    list_no: Optional[str] = None
+    list_date: date = Field(default_factory=date.today)
+    customer_id: Optional[int] = None
+    customer_name: str = ""
+    item_description: str = ""
+    less_default: float = 0
+    lines: list[PackagingListLineIn] = []
+
+
+class PackagingListUpdate(BaseModel):
+    list_no: Optional[str] = None
+    list_date: Optional[date] = None
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    item_description: Optional[str] = None
+    less_default: Optional[float] = None
+    lines: Optional[list[PackagingListLineIn]] = None
+
+
+class PackagingListOut(ORMModel):
+    id: int
+    list_no: str
+    list_date: date
+    customer_id: Optional[int]
+    customer_name: str
+    item_description: str
+    less_default: float
+    total_gross_wt: float
+    total_less: float
+    total_net_wt: float
+    lines: list[PackagingListLineOut]
+    created_by: Optional[UserMiniOut] = None
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+
 class PageOut(BaseModel):
     items: list[Any]
     total: int

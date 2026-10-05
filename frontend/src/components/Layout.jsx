@@ -30,6 +30,7 @@ const SECTIONS = [
       { to: '/production', label: 'Production', icon: Factory },
       { to: '/local-orders', label: 'Local Orders', icon: Store },
       { to: '/pending-po', label: 'Pending PO', icon: ListChecks },
+      { to: '/packaging-lists', label: 'Packaging List', icon: Package },
     ],
   },
   {
@@ -70,6 +71,7 @@ const TITLE_MAP = {
   '/': { title: 'Dashboard', sub: 'Business overview' },
   '/orders': { title: 'Orders', sub: 'Sales orders & pipeline' },
   '/quotations': { title: 'Quotations', sub: 'Sales quotations & proposals' },
+  '/packaging-lists': { title: 'Packaging List', sub: 'Box-wise packing weights' },
   '/dispatch': { title: 'Dispatch', sub: 'Customer-wise dispatch tracking' },
   '/production': { title: 'Production', sub: 'Schedule, actual output & reports' },
   '/local-orders': { title: 'Local Orders', sub: 'Local orders & plans' },
