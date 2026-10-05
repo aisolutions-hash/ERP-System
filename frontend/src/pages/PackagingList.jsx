@@ -126,6 +126,10 @@ export default function PackagingList() {
   }
 
   const openEdit = (row) => {
+    // Modals are portalled to <body> in JSX order, so the detail window would
+    // paint over the edit form. Close it before opening the form.
+    setDetail(null)
+    setDetailLoading(false)
     setForm({
       list_date: row.list_date || today(),
       customer_id: row.customer_id || null,
@@ -721,7 +725,7 @@ const setDefaultLess = (value) => {
                       <td className="px-3 py-2 text-center text-slate-500">{l.sr_no}</td>
                       <td className="px-3 py-2 text-right font-medium">{fmtWt(l.gross_wt)}</td>
                       <td className="px-3 py-2 text-right text-slate-600">{fmtWt(l.less)}</td>
-                      <td className="px-3 py-2 text-right font-semibold">{fmtWt(l.net_wt)}</td>
+<td className="px-3 py-2 text-right font-semibold">{l.gross_wt === '' || l.gross_wt == null ? '—' : fmtWt(l.net_wt)}</td>
                       <td className="px-3 py-2 text-right">
                         <button
                           onClick={() => deleteWeightInline(l)}
@@ -772,7 +776,7 @@ const setDefaultLess = (value) => {
                         className="input w-full text-right py-1.5"
                       />
                     </td>
-                    <td className="px-3 py-2 text-right font-semibold text-slate-400">{fmtWt(addRowNet())}</td>
+                    <td className="px-3 py-2 text-right font-semibold text-slate-400">{addRow.gross_wt === '' || addRow.gross_wt == null ? '—' : fmtWt(addRowNet())}</td>
                     <td className="px-3 py-2 text-right">
                       <button
                         onClick={addWeightInline}
