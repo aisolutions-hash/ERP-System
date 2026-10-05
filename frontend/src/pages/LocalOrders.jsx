@@ -478,9 +478,22 @@ export default function LocalOrders() {
       .finally(() => setEntrySaving(false))
   }
 
-  const transferForOrder = (o) => {
-    const lines = (o.lines || []).map((ln, i) => {
-      const s = (o.stock?.lines || [])[i] || {}
+  const transferForOrder = async (o) => {
+    // Refresh the order detail so the stock snapshot reflects the latest
+    // production output before computing transfer needs. Map stock records by
+    // line_id instead of array index so later-added lines are never misaligned.
+    let order = o
+    if (o?.id) {
+      try {
+        const { data } = await api.get(`/local-orders/${o.id}`)
+        if (data) order = data
+      } catch {
+        // Fall back to the passed order if the refresh fails.
+      }
+    }
+    const stockByLine = Object.fromEntries((order.stock?.lines || []).map((s) => [s.line_id, s]))
+    const lines = (order.lines || []).map((ln) => {
+      const s = stockByLine[ln.id] || {}
       const gap = Math.max((Number(ln.balance_qty) || 0) - (Number(s.available_dispatch) || 0), 0)
       const need = Math.min(gap, Number(s.available_main) || 0)
       return { product_id: ln.product_id, item_code: ln.item_code || '', description: ln.description || ln.model || '', quantity: need }
@@ -488,9 +501,9 @@ export default function LocalOrders() {
     setTransferInit({
       id: null, transfer_no: null,
       from_plant_id: '', to_plant_id: dispatchPlantId ?? '',
-      customer_id: o.customer_id ?? null,
-      customer_name: o.customer_name || o.customer || '',
-      transfer_date: today(), notes: `Reposition stock for ${o.order_no}`, lines,
+      customer_id: order.customer_id ?? null,
+      customer_name: order.customer_name || order.customer || '',
+      transfer_date: today(), notes: `Reposition stock for ${order.order_no}`, lines,
     })
     setShowTransferModal(true)
   }
