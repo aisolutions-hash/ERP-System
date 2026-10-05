@@ -5,7 +5,7 @@ from datetime import date
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -101,41 +101,6 @@ def _next_quotation_no(db: Session) -> str:
         except ValueError:
             continue
     return f"{prefix}{max_seq + 1:03d}"
-
-
-def _ensure_customer_exists(db: Session, data: QuotationCreate | QuotationUpdate) -> None:
-    """Ensure the supplied customer_id foreign key exists. If it does not, create
-    a placeholder customer record so the quotation can be saved without violating
-    the foreign-key constraint. This is safe because the user controls the actual
-    customer details on the quotation form."""
-    if not data.customer_id:
-        return
-    existing = db.get(Customer, data.customer_id)
-    if existing:
-        return
-    db.execute(
-        text(
-            "INSERT INTO customers (id, name, code, company, contact_person, phone, email, address, gstin, is_plant, is_active, notes, source_excel, confirmation_status, created_at) "
-            "VALUES (:id, :name, :code, :company, :contact_person, :phone, :email, :address, :gstin, :is_plant, :is_active, :notes, :source_excel, :confirmation_status, NOW())"
-        ),
-        {
-            "id": data.customer_id,
-            "name": data.customer_name or f"Customer {data.customer_id}",
-            "code": str(data.customer_id),
-            "company": data.customer_name or "",
-            "contact_person": data.customer_contact or "",
-            "phone": data.customer_contact or "",
-            "email": data.customer_email or "",
-            "address": data.customer_address or "",
-            "gstin": data.customer_gstin or "",
-            "is_plant": False,
-            "is_active": True,
-            "notes": "",
-            "source_excel": "",
-            "confirmation_status": "CONFIRMED",
-        },
-    )
-    db.flush()
 
 
 def _resolve_customer(db: Session, data: QuotationCreate | QuotationUpdate) -> Customer | None:
@@ -380,7 +345,6 @@ def create_quotation(
     user: CurrentUser,
 ):
     """Create a new quotation. Defaults to Draft."""
-    _ensure_customer_exists(db, data)
     customer = _resolve_customer(db, data)
 
     q = Quotation(
@@ -502,7 +466,6 @@ def update_quotation(
     # Draft / Rejected / Expired: update in place.
     apply_updates(q, data, exclude={"lines"})
 
-    _ensure_customer_exists(db, data)
     customer = _resolve_customer(db, data)
     _apply_customer_defaults(q, customer)
     _apply_company_defaults(q)

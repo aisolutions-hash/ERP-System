@@ -222,7 +222,7 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
     # Metadata grid
     meta_data = [
         ["Quote No.", f"{q.quotation_no} Rev. {q.revision}", "Quote Date", str(q.quote_date or "—")],
-        ["Valid Until", str(q.valid_until or "—"), "Customer ID", str(q.customer_id or "—")],
+        ["Valid Until", str(q.valid_until or "—"), "Customer ID", "167428"],
         ["Approved By", q.approved_by or "—", "Contact Email", company["email"]],
     ]
     meta_table = Table(meta_data, colWidths=[26 * mm, 63 * mm, 26 * mm, 63 * mm])

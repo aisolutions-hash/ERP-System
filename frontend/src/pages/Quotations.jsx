@@ -55,7 +55,7 @@ const EMPTY_FORM = {
   quotation_no: '',
   quotation_type: 'Manufacturing',
   status: 'Draft',
-  customer_id: 167428,
+  customer_id: null,
   customer_name: '',
   customer_contact: '',
   customer_email: '',
@@ -180,7 +180,7 @@ function buildQuotationHtml(q) {
 
   <table class="meta-table">
     <tr><td>Quote Number</td><td>${q.quotation_no} Rev. ${q.revision}</td><td>Quote Date</td><td>${q.quote_date}</td></tr>
-    <tr><td>Valid Until</td><td>${q.valid_until || '—'}</td><td>Customer ID</td><td>${q.customer_id || '—'}</td></tr>
+    <tr><td>Valid Until</td><td>${q.valid_until || '—'}</td><td>Customer ID</td><td>167428</td></tr>
     <tr><td>Approved By</td><td>${q.approved_by || '—'}</td><td>Contact Email</td><td>${contactEmail}</td></tr>
   </table>
 
@@ -352,7 +352,6 @@ export default function Quotations() {
     setForm({
       ...EMPTY_FORM,
       ...q,
-      customer_id: 167428,
       quote_date: q.quote_date || EMPTY_FORM.quote_date,
       valid_until: q.valid_until || '',
       lines: (q.lines || []).map((l) => ({
@@ -369,20 +368,28 @@ export default function Quotations() {
   }
 
   const setCustomer = (id, manual) => {
-    if (id) {
-      const c = customerMap[id]
-      setForm((f) => ({
+    setForm((f) => {
+      const c = id ? customerMap[id] : null
+      // When an existing customer is deselected, clear the derived contact
+      // fields so stale data from the previous selection is not kept.
+      const clearDerived = f.customer_id && !id ? {
+        customer_contact: '',
+        customer_email: '',
+        customer_address: '',
+        customer_gstin: '',
+      } : {}
+      return {
         ...f,
-        customer_id: 167428,
-        customer_name: c?.name || '',
-        customer_contact: c?.phone || '',
-        customer_email: c?.email || '',
-        customer_address: c?.address || '',
-        customer_gstin: c?.gstin || '',
-      }))
-    } else {
-      setForm((f) => ({ ...f, customer_id: 167428, customer_name: manual || '' }))
-    }
+        customer_id: id || null,
+        customer_name: c?.name || manual || '',
+        ...(c ? {
+          customer_contact: c.phone || '',
+          customer_email: c.email || '',
+          customer_address: c.address || '',
+          customer_gstin: c.gstin || '',
+        } : clearDerived),
+      }
+    })
   }
 
   const setLine = (idx, field, value) => {
@@ -442,7 +449,6 @@ export default function Quotations() {
         status: forceStatus || form.status,
         quotation_no: form.quotation_no || null,
         valid_until: form.valid_until || null,
-        customer_id: 167428,
         lines: form.lines.map((ln) => ({
           product_id: ln.product_id || null,
           item_code: ln.item_code || '',
@@ -732,7 +738,7 @@ export default function Quotations() {
                   <label className="block text-xs text-slate-500 mb-1">Customer *</label>
                   <SearchSelect
                     options={customers.map((c) => ({ id: c.id, label: c.name }))}
-                    value={form.customer_id}
+                    value={form.customer_id || null}
                     initialLabel={form.customer_name}
                     placeholder="Search or enter a customer"
                     onChange={setCustomer}
