@@ -104,11 +104,20 @@ def _next_quotation_no(db: Session) -> str:
 
 
 def _resolve_customer(db: Session, data: QuotationCreate | QuotationUpdate) -> Customer | None:
-    """Link to an existing customer or create a new master record safely."""
-    if data.customer_id:
+    """Link to an existing customer or create a new master record safely.
+
+    If a customer_id is explicitly supplied, it must exist. An invalid id is
+    rejected immediately instead of silently falling back to creating a new
+    customer from the supplied name.
+    """
+    if data.customer_id is not None:
         customer = db.get(Customer, data.customer_id)
-        if customer:
-            return customer
+        if customer is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Customer {data.customer_id} not found",
+            )
+        return customer
     if data.customer_name:
         return get_or_create_customer(
             db, data.customer_name, data.customer_contact or "", data.customer_email or ""
@@ -152,7 +161,7 @@ def _apply_company_defaults(quotation: Quotation) -> None:
     if not quotation.company_phone:
         quotation.company_phone = "+91 9405536016"
     if not quotation.contact_email:
-        quotation.contact_email = "info@kalikaenterprises.com"
+        quotation.contact_email = "info@kalikaindia.com"
 
 
 def _load_quotation(db: Session, quotation_id: int) -> Quotation:

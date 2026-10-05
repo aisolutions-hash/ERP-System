@@ -158,9 +158,11 @@ function buildQuotationHtml(q) {
     .terms { margin-top: 20px; padding: 12px 14px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
     .terms h3 { margin: 0 0 6px; color: #1e3a8a; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
     .terms pre { margin: 0; font-family: inherit; font-size: 11px; line-height: 1.6; white-space: pre-wrap; color: #475569; }
-    .approval { margin-top: 28px; display: flex; justify-content: space-between; align-items: flex-end; }
-    .approval .sign { font-size: 12px; color: #334155; }
-    .stamp { max-height: 100px; }
+    .signatory-block { margin-top: 28px; display: flex; justify-content: flex-end; }
+    .signatory-inner { text-align: center; width: 140px; }
+    .signatory-inner .stamp { max-height: 100px; display: block; margin: 0 auto 4px; }
+    .signatory-text { font-size: 12px; color: #334155; font-weight: 600; }
+    .signatory-sub { font-size: 11px; color: #475569; margin-top: 2px; }
     .contact { margin-top: 12px; font-size: 11px; color: #475569; }
     .footer { margin-top: 24px; text-align: center; font-size: 10px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 10px; }
     @media print { body { padding: 0; } }
@@ -209,13 +211,12 @@ function buildQuotationHtml(q) {
 
   ${q.terms ? `<div class="terms"><h3>Terms & Conditions</h3><pre>${q.terms}</pre></div>` : ''}
 
-  <div class="approval">
-    <div class="sign">
-      <strong>Authorized Signatory</strong><br>
-      ${q.approved_by || 'For Kalika Enterprises'}<br><br>
-      ___________________________
+  <div class="signatory-block">
+    <div class="signatory-inner">
+      <img src="/assets/stamp.png" class="stamp" alt="Approved Stamp">
+      <div class="signatory-text">Authorized Signatory</div>
+      <div class="signatory-sub">For Kalika Enterprises</div>
     </div>
-    <img src="/assets/stamp.png" class="stamp" alt="Approved Stamp">
   </div>
 
   <div class="contact">If you have any questions about this price quote, please contact ${contactEmail}</div>
@@ -444,11 +445,28 @@ export default function Quotations() {
     setFormBusy(true)
     setFormError(null)
     try {
+      // Send only the fields defined by the quotation API schema. Avoid leaking
+      // response-only data such as id, nested customer object, revision totals,
+      // subtotal/total or timestamps back to the create/update endpoints.
       const payload = {
-        ...form,
-        status: forceStatus || form.status,
+        quotation_type: form.quotation_type,
+        customer_id: form.customer_id,
+        customer_name: form.customer_name,
+        customer_contact: form.customer_contact,
+        customer_email: form.customer_email,
+        customer_address: form.customer_address,
+        customer_gstin: form.customer_gstin,
+        company_name: form.company_name,
+        company_address: form.company_address,
+        company_website: form.company_website,
+        company_phone: form.company_phone,
+        contact_email: form.contact_email,
         quotation_no: form.quotation_no || null,
+        quote_date: form.quote_date,
         valid_until: form.valid_until || null,
+        approved_by: form.approved_by,
+        terms: form.terms,
+        status: forceStatus || form.status,
         lines: form.lines.map((ln) => ({
           product_id: ln.product_id || null,
           item_code: ln.item_code || '',

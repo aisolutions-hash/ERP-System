@@ -304,17 +304,14 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
     else:
         story.append(Paragraph("No line items.", style_normal))
 
-    # Totals immediately after the line-item table
+    # Totals immediately after the line-item table. Tax % is display-only and
+    # discount is not used, so only Subtotal and Total Amount are shown.
     story.append(Spacer(1, 6))
     total_value = float(q.total_amount or 0)
     subtotal = float(q.subtotal or 0)
-    discount = float(q.discount_total or 0)
-    taxable = subtotal - discount
 
     totals_data = [
         ["Subtotal", _fmt_num(subtotal)],
-        ["Discount", _fmt_num(discount)],
-        ["Taxable Value", _fmt_num(taxable)],
         ["Total Amount (INR)", _fmt_num(total_value)],
     ]
     totals_table = Table(totals_data, colWidths=[45 * mm, 30 * mm])
