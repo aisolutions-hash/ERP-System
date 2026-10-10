@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Pencil, X, Trash2, Copy, Share2, Printer, Search, Image, Package } from 'lucide-react'
 import html2canvas from 'html2canvas'
 import api from '../lib/api'
@@ -27,6 +27,42 @@ const emptyForm = () => ({
   less_default: '',
   lines: [emptyLine()],
 })
+
+// Unsaved form draft survives an accidental window/tab close and is only
+// cleared once the packaging list is saved successfully.
+const DRAFT_KEY = 'kalika_packaging_draft_v1'
+
+const readDraft = () => {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY)
+    if (!raw) return null
+    const d = JSON.parse(raw)
+    if (!d || !d.form || !Array.isArray(d.form.lines)) return null
+    return d
+  } catch {
+    return null
+  }
+}
+
+const clearDraft = () => {
+  try { localStorage.removeItem(DRAFT_KEY) } catch { /* ignore */ }
+}
+
+// A pristine (untouched) form is not worth persisting as a draft.
+const isFormEmpty = (f) => {
+  if (!f) return true
+  const lines = f.lines || []
+  const hasLineData = lines.some(
+    (l) => (l.gross_wt !== '' && l.gross_wt != null) || (l.less !== '' && l.less != null)
+  )
+  return (
+    !f.customer_id &&
+    !(f.customer_name || '').trim() &&
+    !(f.item_description || '').trim() &&
+    (f.less_default === '' || f.less_default == null) &&
+    !hasLineData
+  )
+}
 
 const errText = (err) => {
   const d = err?.response?.data
@@ -60,6 +96,16 @@ export default function PackagingList() {
   const [showDelete, setShowDelete] = useState(null)
   const [success, setSuccess] = useState('')
 
+  // Draft restore/persistence (see DRAFT_KEY above)
+  const [draftSavedAt, setDraftSavedAt] = useState(null)
+
+  // Refs so Enter can move the cursor down the box-weight rows without clicking.
+  const grossRefs = useRef([])
+  const lessRefs = useRef([])
+  const addRowGrossRef = useRef(null)
+  // Row index that should receive focus after the next render (new row added).
+  const pendingFocusRef = useRef(null)
+
   const flash = (text) => { setSuccess(text); setTimeout(() => setSuccess(''), 6000) }
 
   const customerOptions = useMemo(
@@ -87,9 +133,39 @@ export default function PackagingList() {
     api.get('/customers', { params: { page_size: 500 } }).then((r) => setCustomers(r.data.items || [])).catch(() => {})
     api.get('/products', { params: { page_size: 500 } }).then((r) => setProducts(r.data.items || [])).catch(() => {})
     const focus = new URLSearchParams(window.location.search).get('list')
-    if (focus && Number(focus)) openDetail({ id: Number(focus) })
+    if (focus && Number(focus)) {
+      openDetail({ id: Number(focus) })
+    } else {
+      // Restore unsaved work from a previous visit (window/tab was closed).
+      const draft = readDraft()
+      if (draft) {
+        setForm(draft.form)
+        setEditing(draft.editing || null)
+        setDraftSavedAt(draft.savedAt || Date.now())
+        setShowForm(true)
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Persist the in-progress form so an accidental close never loses data.
+  useEffect(() => {
+    if (!showForm) return
+    if (isFormEmpty(form)) {
+      clearDraft()
+      setDraftSavedAt(null)
+      return
+    }
+    const snapshot = {
+      form,
+      editing: editing ? { id: editing.id, list_no: editing.list_no } : null,
+      savedAt: Date.now(),
+    }
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(snapshot))
+      setDraftSavedAt(snapshot.savedAt)
+    } catch { /* storage unavailable (private mode) — ignore */ }
+  }, [form, showForm, editing])
 
   useEffect(() => {
     const t = setTimeout(load, 250)
@@ -124,6 +200,51 @@ export default function PackagingList() {
     setErrors({})
     setShowForm(true)
   }
+
+  // Explicitly throw away the saved draft and start clean.
+  const discardDraft = () => {
+    clearDraft()
+    setDraftSavedAt(null)
+    setForm(emptyForm())
+    setEditing(null)
+    setErrors({})
+    setShowForm(false)
+  }
+
+  // Enter on a Gross/Less cell drops the cursor onto the next row's Gross cell,
+  // adding a fresh row when the last one is filled. Avoids clicking each row.
+  const focusGross = (i) => {
+    const el = grossRefs.current[i]
+    if (el) {
+      el.focus()
+      if (typeof el.select === 'function') el.select()
+    }
+  }
+
+  const handleLineEnter = (i) => {
+    const lines = form.lines || []
+    const isLast = i === lines.length - 1
+    if (isLast) {
+      const last = lines[i] || {}
+      if ((last.gross_wt === '' || last.gross_wt == null) && (last.less === '' || last.less == null)) return
+      pendingFocusRef.current = i + 1
+      addLine()
+    } else {
+      focusGross(i + 1)
+    }
+  }
+
+  // Move focus to the freshly-added row once it is rendered.
+  useEffect(() => {
+    if (pendingFocusRef.current == null) return
+    const target = pendingFocusRef.current
+    pendingFocusRef.current = null
+    const el = grossRefs.current[target]
+    if (el) {
+      el.focus()
+      if (typeof el.select === 'function') el.select()
+    }
+  }, [form.lines])
 
   const openEdit = (row) => {
     // Modals are portalled to <body> in JSX order, so the detail window would
@@ -261,6 +382,8 @@ const setDefaultLess = (value) => {
         setShowForm(false)
         setEditing(null)
         setWarning(null)
+        clearDraft()
+        setDraftSavedAt(null)
         flash(`${editing ? 'Updated' : 'Created'} packaging list ${res.data.list_no}`)
         load()
         if (detail?.id) openDetail({ id: detail.id })
@@ -299,6 +422,8 @@ const setDefaultLess = (value) => {
         setDetail(res.data)
         setAddRow({ gross_wt: '', less: res.data.less_default != null ? String(res.data.less_default) : '' })
         load()
+        // Keep the cursor in the add box for fast consecutive entry.
+        requestAnimationFrame(() => addRowGrossRef.current?.focus())
       })
       .catch((err) => window.alert(errText(err)))
       .finally(() => setLineBusy(false))
@@ -386,24 +511,26 @@ const setDefaultLess = (value) => {
     return `<!doctype html><html><head><meta charset="utf-8"><title>Packing List ${esc(d.list_no)}</title>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #111; margin: 28px; background: #fff; }
-  .header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
-  .header img { height: 60px; max-width: 200px; object-fit: contain; }
-  .header .title { font-size: 24px; font-weight: 800; color: #111; line-height: 1.2; letter-spacing: -0.3px; }
-  .header .sub-title { font-size: 13px; color: #666; margin-top: 2px; }
-  .doc-title { text-align: center; font-size: 18px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin: 18px 0 10px; border-bottom: 2px solid #111; padding-bottom: 6px; }
-  .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 24px; margin-bottom: 20px; }
-  .meta .row { display: flex; justify-content: space-between; border-bottom: 1px dashed #ddd; padding: 5px 0; }
-  .meta .lbl { color: #666; font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; margin: 10mm; background: #fff; }
+  .header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .header img { height: 42px; max-width: 160px; object-fit: contain; }
+  .header .title { font-size: 19px; font-weight: 800; color: #111; line-height: 1.15; letter-spacing: -0.3px; }
+  .header .sub-title { font-size: 11px; color: #666; margin-top: 1px; }
+  .doc-title { text-align: center; font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin: 8px 0 6px; border-bottom: 1.5px solid #111; padding-bottom: 4px; }
+  .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 20px; margin-bottom: 8px; }
+  .meta .row { display: flex; justify-content: space-between; border-bottom: 1px dashed #ddd; padding: 2px 0; }
+  .meta .lbl { color: #666; font-size: 9px; text-transform: uppercase; letter-spacing: .4px; }
   .meta .val { font-weight: 700; }
-  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-  th, td { border: 1px solid #bbb; padding: 8px 10px; }
-  th { background: #f0f0f0; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; color: #444; }
+  table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+  thead { display: table-header-group; }
+  th, td { border: 1px solid #bbb; padding: 2px 6px; line-height: 1.2; font-size: 10px; }
+  th { background: #f0f0f0; text-transform: uppercase; font-size: 9px; letter-spacing: .4px; color: #444; padding: 3px 6px; }
   .c { text-align: center; }
   .r { text-align: right; }
-  .total td { font-weight: 800; background: #f7f7f7; border-top: 2px solid #111; font-size: 13px; }
-  .foot { margin-top: 30px; font-size: 10px; color: #888; text-align: center; }
-  @media print { body { margin: 12mm; } }
+  .total td { font-weight: 800; background: #f7f7f7; border-top: 2px solid #111; font-size: 11px; }
+  .foot { margin-top: 12px; font-size: 9px; color: #888; text-align: center; }
+  @page { size: A4; margin: 10mm; }
+  @media print { body { margin: 0; } }
 </style></head><body>
 <div class="header">
   <img src="${logoUrl}" alt="Kalika" />
@@ -449,7 +576,8 @@ const setDefaultLess = (value) => {
     iframe.style.left = '-9999px'
     iframe.style.top = '0'
     iframe.style.width = '900px'
-    iframe.style.height = '1200px'
+    // Tall viewport so long lists (40+ rows) are not clipped in the JPG.
+    iframe.style.height = '4000px'
     document.body.appendChild(iframe)
 
     const doc = iframe.contentDocument
@@ -499,6 +627,19 @@ const setDefaultLess = (value) => {
 
       {success && <div className="mb-4 p-3 rounded-lg bg-green-50 text-green-700 text-sm border border-green-200">{success}</div>}
 
+      {draftSavedAt && !showForm && (
+        <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+          <div className="flex-1 text-sm text-amber-800">
+            <span className="font-semibold">Unsaved draft found.</span>{' '}
+            Last edited {new Date(draftSavedAt).toLocaleString()}. It was kept safe when the window was closed.
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => setShowForm(true)} className="btn btn-sm btn-primary">Resume editing</button>
+            <button onClick={discardDraft} className="btn btn-sm btn-secondary">Discard</button>
+          </div>
+        </div>
+      )}
+
       <Card>
         <div className="mb-4">
           <div className="relative">
@@ -545,9 +686,14 @@ const setDefaultLess = (value) => {
         subtitle="Record box-wise gross, less and net weights"
         wide
         footer={(
-          <div className="flex flex-wrap items-center justify-end gap-2 w-full">
-            <button onClick={() => setShowForm(false)} className="btn btn-secondary">Cancel</button>
-            <button onClick={() => doSave(false)} disabled={saving} className="btn btn-primary">{saving ? 'Saving…' : (editing ? 'Update' : 'Save')}</button>
+          <div className="flex flex-wrap items-center justify-between gap-2 w-full">
+            <span className="text-xs text-slate-400">
+              {draftSavedAt ? `Draft auto-saved ${new Date(draftSavedAt).toLocaleTimeString()}` : 'Changes are saved as a draft automatically'}
+            </span>
+            <div className="flex items-center gap-2 ml-auto">
+              <button onClick={() => setShowForm(false)} className="btn btn-secondary">Cancel</button>
+              <button onClick={() => doSave(false)} disabled={saving} className="btn btn-primary">{saving ? 'Saving…' : (editing ? 'Update' : 'Save')}</button>
+            </div>
           </div>
         )}
       >
@@ -602,7 +748,7 @@ const setDefaultLess = (value) => {
             <h4 className="font-semibold text-slate-800 text-sm">Box Weights</h4>
             <p className="text-xs text-slate-500">Less follows Default Less automatically — Net WT = Gross WT − Less.</p>
           </div>
-          <button onClick={addLine} className="btn btn-sm btn-secondary"><Plus size={14} /> Add Box</button>
+          <button onClick={() => { pendingFocusRef.current = (form.lines || []).length; addLine() }} className="btn btn-sm btn-secondary"><Plus size={14} /> Add Box</button>
         </div>
         {errors.lines && <p className="text-red-500 text-xs mb-2">{errors.lines}</p>}
 
@@ -622,15 +768,27 @@ const setDefaultLess = (value) => {
                 <tr key={i} className="border-t">
                   <td className="px-3 py-2 text-center text-slate-500">{i + 1}</td>
                   <td className="px-3 py-2">
-                    <input type="number" step="0.001" min="0" value={l.gross_wt} onChange={(e) => updateLine(i, 'gross_wt', e.target.value)} className={`input w-full text-right font-medium ${errors[`line_${i}_gross`] ? 'border-red-300' : ''}`} />
+                    <input
+                      ref={(el) => { grossRefs.current[i] = el }}
+                      type="number"
+                      step="0.001"
+                      min="0"
+                      value={l.gross_wt}
+                      onChange={(e) => updateLine(i, 'gross_wt', e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleLineEnter(i) } }}
+                      placeholder="Gross"
+                      className={`input w-full text-right font-medium ${errors[`line_${i}_gross`] ? 'border-red-300' : ''}`}
+                    />
                   </td>
                   <td className="px-3 py-2">
                     <input
+                      ref={(el) => { lessRefs.current[i] = el }}
                       type="number"
                       step="0.001"
                       min="0"
                       value={l.less}
                       onChange={(e) => updateLine(i, 'less', e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleLineEnter(i) } }}
                       title={l.lessTouched ? 'Custom less — will not change with Default Less' : 'Follows Default Less'}
                       className={`input w-full text-right ${l.lessTouched ? 'text-amber-700 bg-amber-50/40' : 'text-slate-600'} ${errors[`line_${i}_less`] ? 'border-red-300' : ''}`}
                     />
@@ -754,6 +912,7 @@ const setDefaultLess = (value) => {
                     <td className="px-3 py-2 text-slate-400 text-xs font-medium whitespace-nowrap">+ Add</td>
                     <td className="px-3 py-2">
                       <input
+                        ref={addRowGrossRef}
                         type="number"
                         step="0.001"
                         min="0"
