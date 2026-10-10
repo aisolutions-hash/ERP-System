@@ -471,6 +471,7 @@ export default function Production() {
           <Card title="Production" subtitle="Schedule, production quantity, completion and balance by item"
             actions={
               <div className="flex items-center gap-2 flex-wrap">
+                <button onClick={() => downloadFile('/production/report/orders/csv?scope=active', 'production_active.csv')} className="btn btn-secondary"><Download size={15} /> Download CSV</button>
                 <button onClick={() => downloadFile('/production/import/template', 'production_plan_template.csv')} className="btn btn-secondary"><Download size={15} /> Template</button>
                 <button onClick={() => { setImportFile(null); setImportPreview(null); setImportResult(null); setImportError(null); setShowImport(true) }} className="btn btn-secondary"><Upload size={15} /> Import Production Plan</button>
                 <button onClick={() => { setProdForm({ category: 'Manufacturing', produced_qty: '', production_date: today(), existing_produced_qty: 0 }); setShowProdForm(true) }} className="btn btn-primary"><Plus size={15} /> New Plan</button>
@@ -481,7 +482,8 @@ export default function Production() {
               : <Table columns={productionCols} data={activeProductionOrders} keyField="id" onRowClick={openDetail} stickyColumns={['model']} />}
           </Card>
           {completedProductionOrders.length > 0 && (
-            <Card title="Completed Production" subtitle={`${completedProductionOrders.length} completed production plan(s)`}>
+            <Card title="Completed Production" subtitle={`${completedProductionOrders.length} completed production plan(s)`}
+              actions={<button onClick={() => downloadFile('/production/report/orders/csv?scope=completed', 'production_completed.csv')} className="btn btn-secondary"><Download size={15} /> Download CSV</button>}>
               <Table columns={productionCols} data={completedProductionOrders} keyField="id" onRowClick={openDetail} stickyColumns={['model']} />
             </Card>
           )}

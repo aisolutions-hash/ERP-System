@@ -52,6 +52,10 @@ class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserOut
+    # Session policy surfaced to the client so it can enforce timeouts without
+    # hard-coding them (seconds). 0 = not configured.
+    expires_in: int = 0
+    inactivity_seconds: int = 0
 
 
 # ------------------------- Master -------------------------

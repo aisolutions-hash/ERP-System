@@ -1,4 +1,5 @@
 import axios from 'axios'
+import * as session from './session'
 
 // Dev: Vite proxy forwards /api -> backend (strips prefix).
 // Prod (Cloud Run): FastAPI serves frontend + backend from same origin, no /api prefix.
@@ -7,7 +8,7 @@ const api = axios.create({
 })
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('kalika_token')
+  const token = session.getToken()
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
@@ -20,14 +21,25 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+// Notify the app exactly once per expiry so the auth context can sign out and
+// the router can redirect — no hard reloads and no repeated redirect loops.
+let expiredNotified = false
+
 api.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    expiredNotified = false
+    return res
+  },
   (err) => {
-    if (err.response?.status === 401) {
-      localStorage.removeItem('kalika_token')
-      localStorage.removeItem('kalika_user')
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login'
+    const status = err.response?.status
+    const url = err.config?.url || ''
+    // A 401 from /auth/login is a credential error handled by the login form,
+    // not an expired session.
+    if (status === 401 && !url.includes('/auth/login')) {
+      session.clearSession()
+      if (!expiredNotified) {
+        expiredNotified = true
+        window.dispatchEvent(new Event('kalika:session-expired'))
       }
     }
     return Promise.reject(err)

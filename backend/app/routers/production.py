@@ -1,7 +1,10 @@
 """Production management (CRUD + daily movements + status lifecycle)."""
+import csv
+import io
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status, UploadFile, File
+from fastapi.responses import StreamingResponse
 from sqlalchemy import Integer, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -270,6 +273,75 @@ def plan_vs_actual(
         })
     rows.sort(key=lambda x: -x["completion_pct"])
     return {"items": rows, "unlinked_plans": unlinked, "total": len(rows)}
+
+
+@router.get("/report/orders/csv")
+def production_orders_csv(
+    db: Annotated[Session, Depends(get_db)],
+    _: CurrentUser,
+    scope: str = Query("active", description="'active', 'completed' or 'all'"),
+    product_id: int | None = None,
+):
+    """Production orders as a CSV report (one row per production plan),
+    mirroring the Production table columns.
+
+    scope=active    -> current (not-yet-completed) production plans (default)
+    scope=completed -> completed production plans
+    scope=all       -> every production plan
+    """
+    if scope not in ("active", "completed", "all"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="scope must be 'active', 'completed' or 'all'")
+    stmt = select(ProductionOrder)
+    if scope == "active":
+        stmt = stmt.where(ProductionOrder.status != ProductionStatus.completed)
+    elif scope == "completed":
+        stmt = stmt.where(ProductionOrder.status == ProductionStatus.completed)
+    if product_id:
+        stmt = stmt.where(ProductionOrder.product_id == product_id)
+    rows = db.scalars(
+        stmt.order_by(ProductionOrder.report_date.desc(), ProductionOrder.id.desc())
+    ).all()
+
+    headers = ["Order No", "Item Code", "Model", "Category", "Customer",
+               "Local Order", "Section", "Schedule Qty", "Ask Till Date",
+               "Production Qty", "% Comp", "Balance Qty", "Opening Stock",
+               "Status", "Start Date", "Completion Date", "Report Date", "Remarks"]
+    data = []
+    for o in rows:
+        p = o.product
+        cust = o.customer
+        is_trading = bool(p and p.category == ProductCategory.trading)
+        data.append([
+            o.order_no,
+            p.item_code if p else "",
+            p.model if p else "",
+            "Trading" if is_trading else "Manufacturing",
+            cust.name if cust else "",
+            o.sales_order.order_no if o.sales_order else "",
+            o.section or "",
+            o.schedule_qty if o.schedule_qty is not None else "",
+            o.ask_till_date if o.ask_till_date is not None else "",
+            o.produced_qty if o.produced_qty is not None else "",
+            round(float(o.completion_pct or 0) * 100, 2),
+            o.balance_qty if o.balance_qty is not None else "",
+            o.opening_stock if o.opening_stock is not None else "",
+            o.status.value,
+            o.start_date or "",
+            o.completion_date or "",
+            o.report_date or "",
+            o.remarks or "",
+        ])
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(headers)
+    writer.writerows(data)
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue().encode("utf-8-sig")),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=production_{scope}.csv"},
+    )
 
 
 @router.get("/{order_id}", response_model=dict)
