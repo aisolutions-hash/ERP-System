@@ -579,6 +579,64 @@ def local_orders_report_csv(db: Annotated[Session, Depends(get_db)], _: CurrentU
     return _csv_response(headers, data, "local_orders_completed.csv")
 
 
+@router.get("/report/active")
+def local_orders_active_report_csv(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
+    """Current (active / not-yet-completed) LOCAL orders as a CSV report.
+
+    One row per order line so every line item is its own row ("saare rows"),
+    with all order/customer/stock columns repeated. Orders that have no lines
+    are still emitted (blank line columns) so no current order is dropped.
+    Completed orders are excluded here — they live in /report/orders.
+    """
+    rows = db.scalars(select(SalesOrder)
+                      .where(SalesOrder.order_type == OrderType.local)
+                      .order_by(SalesOrder.order_date.desc(), SalesOrder.id.desc())).all()
+    headers = ["Order No", "SO Number", "PO Number", "Customer", "Mobile", "Email",
+               "Order Type", "Order Date", "Delivery Date", "Status",
+               "Order Qty", "Dispatched", "Pending", "Total Amount",
+               "Main Store Stock", "Dispatch Stock", "Transfer Required", "Created At",
+               "Line ID", "Item Code", "Size / Description", "Product Model",
+               "Unit", "Line Qty", "Rate", "Less", "Line Amount",
+               "Line Dispatched", "Line Pending"]
+    data = []
+    for o in rows:
+        sync_local_order_status(db, o)
+        s = _serialize(db, o)
+        if s["status"] == "Completed":
+            continue
+        summary = s.get("stock_summary") or {}
+        created = s.get("created_at")
+        header = [
+            s["order_no"], s.get("so_no") or "", s.get("customer_po_no") or "",
+            s.get("customer") or "", s.get("customer_mobile") or "",
+            s.get("customer_email") or "", s.get("order_type") or "",
+            s.get("order_date") or "", s.get("delivery_date") or "",
+            s.get("status") or "", s.get("quantity") or 0,
+            s.get("dispatched_qty") or 0, s.get("pending_qty") or 0,
+            s.get("total_value") or 0,
+            summary.get("main_store_stock") or 0,
+            summary.get("dispatch_stock") or 0,
+            "Yes" if summary.get("transfer_required") else "No",
+            created.isoformat() if hasattr(created, "isoformat") else (created or ""),
+        ]
+        lines = s.get("lines") or []
+        if not lines:
+            data.append(header + [""] * 11)
+            continue
+        for ln in lines:
+            data.append(header + [
+                ln.get("id"), ln.get("item_code") or "",
+                ln.get("description") or "", ln.get("model") or "",
+                ln.get("uom") or "", ln.get("quantity") or 0,
+                ln.get("rate") if ln.get("rate") is not None else "",
+                ln.get("less") if ln.get("less") is not None else "",
+                ln.get("amount") or 0,
+                ln.get("dispatched_qty") or 0, ln.get("balance_qty") or 0,
+            ])
+    db.commit()
+    return _csv_response(headers, data, "local_orders_active.csv")
+
+
 @router.get("/report/plans")
 def local_plans_report_csv(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
     """Production / Dispatch Plans (Local) with linked order, production and

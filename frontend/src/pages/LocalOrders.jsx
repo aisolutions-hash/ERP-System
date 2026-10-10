@@ -670,7 +670,8 @@ export default function LocalOrders() {
         <StatCard label="Total Amount" value={fmtNum(totalValue)} icon={Store} iconClass="bg-blue-50 text-blue-600" />
       </div>
 
-      <Card title="Local Orders" subtitle="Active/incomplete orders only — completed orders move to history below" className="mb-6">
+      <Card title="Local Orders" subtitle="Active/incomplete orders only — completed orders move to history below" className="mb-6"
+        actions={<button onClick={() => downloadFile('/local-orders/report/active', 'local_orders_active.csv')} className="btn btn-secondary btn-sm"><Download size={13} /> Download CSV</button>}>
         {filteredRows.length === 0 ? <Empty text={search ? 'No matching local orders' : 'No active local orders'} /> : <Table columns={orderCols} data={filteredRows} keyField="id" onRowClick={openDetail} stickyColumns={['order_no']} dense />}
       </Card>
 

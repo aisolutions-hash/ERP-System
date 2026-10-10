@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Plus, Search, Download, Eye, Pencil, Trash2, RefreshCw, PackageOpen, FilePlus2, DollarSign, Layers, CheckCircle2, Share2, Printer, Image } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Plus, Search, Download, Pencil, Trash2, RefreshCw, PackageOpen, FilePlus2, DollarSign, Layers, CheckCircle2, Share2, Printer, Image, Loader2 } from 'lucide-react'
 import html2canvas from 'html2canvas'
 import api, { downloadFile } from '../lib/api'
 import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard, SearchSelect } from '../components/ui'
@@ -34,6 +34,15 @@ export default function Purchases() {
   const [products, setProducts] = useState([])
   const [form, setForm] = useState({ lines: [] })
   const [error, setError] = useState(null)
+  // Paged list state: the table loads page-by-page (infinite scroll) so every
+  // record is reachable, while the cards show whole-set totals from the server.
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [stats, setStats] = useState({ received: 0, partially_received: 0, open_value: 0 })
+  const [loadingMore, setLoadingMore] = useState(false)
+  const sentinelRef = useRef(null)
+  const busyRef = useRef(false)
+  const PAGE_SIZE = 100
 
   const calcLine = (ln) => {
     const q = Number(ln.quantity || 0)
@@ -48,20 +57,68 @@ export default function Purchases() {
     return { basic, discount, taxable, gst, total }
   }
 
-  const load = () => {
-    setLoading(true)
-    api.get('/purchases', { params: { search } })
-      .then((res) => setItems(res.data.items))
-      .catch(() => setItems([]))
-      .finally(() => setLoading(false))
-  }
+  const load = useCallback((opts = {}) => {
+    const nextPage = opts.page || 1
+    const append = !!opts.append
+    if (append && busyRef.current) return Promise.resolve()
+    busyRef.current = true
+    if (append) setLoadingMore(true)
+    else setLoading(true)
+    return api.get('/purchases', { params: { search, page: nextPage, page_size: PAGE_SIZE } })
+      .then((res) => {
+        const d = res.data || {}
+        const batch = d.items || []
+        setItems((prev) => (append ? [...prev, ...batch] : batch))
+        setTotal(d.total || 0)
+        setPage(d.page || nextPage)
+        if (d.stats) setStats(d.stats)
+      })
+      .catch(() => { if (!append) setItems([]) })
+      .finally(() => {
+        busyRef.current = false
+        if (append) setLoadingMore(false)
+        else setLoading(false)
+      })
+  }, [search])
 
-  useEffect(() => { load() }, [])
-  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t) }, [search])
+  // Load page 1 on mount and whenever the search changes (debounced).
   useEffect(() => {
-    api.get('/suppliers', { params: { page_size: 500 } }).then((r) => setSuppliers(r.data.items || [])).catch(() => {})
-    api.get('/products', { params: { page_size: 500 } }).then((r) => setProducts(r.data.items || [])).catch(() => {})
+    const t = setTimeout(() => load(), 300)
+    return () => clearTimeout(t)
+  }, [load])
+
+  // Auto-load the next page when the bottom sentinel scrolls into view.
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el || typeof IntersectionObserver === 'undefined') return undefined
+    const io = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting && !loading && !loadingMore && items.length < total) {
+        load({ page: page + 1, append: true })
+      }
+    }, { rootMargin: '300px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [loading, loadingMore, items.length, total, page, load])
+
+  // Load the full supplier master (paged) so autocomplete covers every supplier.
+  const loadAllSuppliers = useCallback(async () => {
+    const all = []
+    let p = 1
+    for (;;) {
+      const { data } = await api.get('/suppliers', { params: { page: p, page_size: 500 } })
+      const batch = data.items || []
+      all.push(...batch)
+      if (batch.length < 500 || all.length >= (data.total || 0)) break
+      p += 1
+      if (p > 40) break // safety cap
+    }
+    return all
   }, [])
+
+  useEffect(() => {
+    loadAllSuppliers().then(setSuppliers).catch(() => {})
+    api.get('/products', { params: { page_size: 500 } }).then((r) => setProducts(r.data.items || [])).catch(() => {})
+  }, [loadAllSuppliers])
 
   const openNew = () => {
     setForm({
@@ -156,6 +213,8 @@ export default function Purchases() {
         setDetail(r.data)
       }
       setShowForm(false); setForm({ lines: [] }); setError(null); load()
+      // A new supplier may have been auto-created server-side; refresh options.
+      loadAllSuppliers().then(setSuppliers).catch(() => {})
     } catch (e) { setError(e.response?.data?.detail || 'Save failed') }
   }
 
@@ -339,10 +398,8 @@ export default function Purchases() {
     { key: 'lines', label: 'Lines', render: (r) => <Badge className="bg-slate-100 text-slate-600">{r.lines?.length || 0}</Badge> },
   ]
 
-  const received = items.filter((i) => i.status === 'Received').length
-  const partial = items.filter((i) => i.status === 'Partially Received').length
-  const partialOpen = items.filter((i) => ['Ordered', 'Partially Received'].includes(i.status))
-  const openAmt = partialOpen.reduce((s, i) => s + (Number(i.total_amount) || 0), 0)
+  const received = stats.received
+  const partial = stats.partially_received
 
   return (
     <div className="animate-fade-in-up">
@@ -350,26 +407,47 @@ export default function Purchases() {
         actions={
           <>
             <button onClick={() => downloadFile('/reports/purchases/csv', 'purchases.csv')} className="btn btn-secondary"><Download size={15} /> CSV</button>
-            <button onClick={load} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>
+            <button onClick={() => load()} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>
             <button onClick={() => { setShowImport(true); setImportResult(null); setImportFile(null) }} className="btn btn-secondary text-sm">Import</button>
             <button onClick={openNew} className="btn btn-primary"><Plus size={15} /> New PO</button>
           </>
         } />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-        <StatCard label="Purchase Orders" value={items.length} icon={FilePlus2} iconClass="bg-amber-50 text-amber-600" />
+        <StatCard label="Purchase Orders" value={total} icon={FilePlus2} iconClass="bg-amber-50 text-amber-600" />
         <StatCard label="Received" value={received} icon={CheckCircle2} iconClass="bg-green-50 text-green-600" valueClass="text-green-600" />
         <StatCard label="Partially Received" value={partial} icon={Layers} iconClass="bg-amber-50 text-amber-600" valueClass="text-amber-600" />
-        <StatCard label="Open Value" value={fmtNum(openAmt)} icon={DollarSign} iconClass="bg-blue-50 text-blue-600" />
+        <StatCard label="Open Value" value={fmtNum(stats.open_value)} icon={DollarSign} iconClass="bg-blue-50 text-blue-600" />
       </div>
 
       <Card actions={
         <div className="relative">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search PO…" className="input input-icon sm:w-56" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search PO no. or supplier…" className="input input-icon sm:w-56" />
         </div>
       }>
-        {loading ? <Loading /> : items.length === 0 ? <Empty /> : <Table columns={columns} data={items} keyField="id" onRowClick={openDetail} stickyColumns={['po_number']} />}
+        {loading ? <Loading /> : items.length === 0 ? <Empty /> : (
+          <>
+            <Table columns={columns} data={items} keyField="id" onRowClick={openDetail} stickyColumns={['po_number']} />
+            {items.length < total && (
+              <div className="mt-3 flex flex-col items-center gap-2">
+                <button
+                  onClick={() => load({ page: page + 1, append: true })}
+                  disabled={loadingMore}
+                  className="btn btn-secondary btn-sm"
+                >
+                  {loadingMore
+                    ? <><Loader2 size={14} className="animate-spin" /> Loading…</>
+                    : `Load more (${items.length} of ${total})`}
+                </button>
+                <div ref={sentinelRef} className="h-2 w-full" aria-hidden="true" />
+              </div>
+            )}
+            {items.length >= total && total > PAGE_SIZE && (
+              <div className="mt-3 text-center text-xs text-slate-400">All {total} purchase orders loaded</div>
+            )}
+          </>
+        )}
       </Card>
 
       {detail && (

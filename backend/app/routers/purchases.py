@@ -133,6 +133,27 @@ def _resolve_line_product(db: Session, line: PurchaseOrderLine) -> Product | Non
     return p
 
 
+def _purchase_stats(db: Session, conditions: list) -> dict:
+    """Aggregate counts/values over the full filtered set (not just one page).
+
+    Lets the Purchases screen show accurate totals while the table itself is
+    loaded page-by-page (infinite scroll)."""
+    def _count(extra):
+        return db.scalar(
+            select(func.count()).select_from(PurchaseOrder).where(*conditions, *extra)
+        ) or 0
+
+    received = _count([PurchaseOrder.status == PurchaseStatus.received])
+    partial = _count([PurchaseOrder.status == PurchaseStatus.partially_received])
+    open_value = db.scalar(
+        select(func.coalesce(func.sum(PurchaseOrder.total_amount), 0)).where(
+            *conditions,
+            PurchaseOrder.status.in_([PurchaseStatus.ordered, PurchaseStatus.partially_received]),
+        )
+    ) or 0
+    return {"received": received, "partially_received": partial, "open_value": float(open_value)}
+
+
 @router.get("", response_model=dict)
 def list_purchases(
     db: Annotated[Session, Depends(get_db)],
@@ -145,23 +166,40 @@ def list_purchases(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=500),
 ):
-    stmt = select(PurchaseOrder)
+    conditions = []
     if search:
         like = f"%{search}%"
-        stmt = stmt.where(or_(PurchaseOrder.po_number.ilike(like), PurchaseOrder.notes.ilike(like)))
+        # Match PO number, notes and supplier name — including POs whose
+        # denormalised supplier_name is blank but whose master record matches.
+        supplier_match = select(Supplier.id).where(
+            or_(Supplier.name.ilike(like), Supplier.company.ilike(like))
+        )
+        conditions.append(or_(
+            PurchaseOrder.po_number.ilike(like),
+            PurchaseOrder.notes.ilike(like),
+            PurchaseOrder.supplier_name.ilike(like),
+            PurchaseOrder.supplier_id.in_(supplier_match),
+        ))
     if supplier_id:
-        stmt = stmt.where(PurchaseOrder.supplier_id == supplier_id)
+        conditions.append(PurchaseOrder.supplier_id == supplier_id)
     if status_:
-        stmt = stmt.where(PurchaseOrder.status == status_)
+        conditions.append(PurchaseOrder.status == status_)
     if date_from:
-        stmt = stmt.where(PurchaseOrder.order_date >= date.fromisoformat(date_from))
+        conditions.append(PurchaseOrder.order_date >= date.fromisoformat(date_from))
     if date_to:
-        stmt = stmt.where(PurchaseOrder.order_date <= date.fromisoformat(date_to))
-    total = db.scalar(select(func.count()).select_from(stmt.subquery()))
-    rows = db.scalars(stmt.order_by(PurchaseOrder.order_date.desc(), PurchaseOrder.id.desc())
-                      .offset((page - 1) * page_size).limit(page_size)).all()
+        conditions.append(PurchaseOrder.order_date <= date.fromisoformat(date_to))
+
+    total = db.scalar(select(func.count()).select_from(PurchaseOrder).where(*conditions))
+    # Newest first by creation time, then PO date, then id — deterministic so
+    # paged/infinite-scroll loads never drop or duplicate records.
+    rows = db.scalars(
+        select(PurchaseOrder).where(*conditions)
+        .order_by(PurchaseOrder.created_at.desc(), PurchaseOrder.order_date.desc(), PurchaseOrder.id.desc())
+        .offset((page - 1) * page_size).limit(page_size)
+    ).all()
     return {"items": [_serialize_po(db, p) for p in rows],
-            "total": total, "page": page, "page_size": page_size}
+            "total": total, "page": page, "page_size": page_size,
+            "stats": _purchase_stats(db, conditions)}
 
 
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)

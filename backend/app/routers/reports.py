@@ -10,15 +10,15 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from ..auth import CurrentUser
 from ..config import settings
 from ..database import get_db
 from ..models import (
     Customer, Dispatch, DispatchLine, Inventory, OrderType, Plant, Product, ProductionMovement,
-    ProductionOrder, PurchaseOrder, Quotation, RawMaterialBalance, SalesOrder, SalesOrderLine,
-    StockMovement, Supplier,
+    ProductionOrder, PurchaseOrder, PurchaseOrderLine, Quotation, RawMaterialBalance, SalesOrder,
+    SalesOrderLine, StockMovement, Supplier,
 )
 from ..services.quotation_pdf import build_quotation_pdf_bytes, _asset_path
 from datetime import date
@@ -227,10 +227,65 @@ def orders_csv(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
 
 @router.get("/purchases/csv")
 def purchases_csv(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
-    rows = db.scalars(select(PurchaseOrder).order_by(PurchaseOrder.order_date.desc())).all()
-    headers = ["PO No", "Supplier", "Order Date", "Status", "Total Amount", "Notes"]
-    data = [[p.po_number, p.supplier.name if p.supplier else "", p.order_date, p.status.value,
-             p.total_amount, p.notes or ""] for p in rows]
+    """Export every purchase order with its supplier and line-item details.
+
+    One CSV row per PO line, repeating the header/supplier fields; purchase
+    orders that have no lines are still emitted (with blank line columns) so no
+    order is silently dropped. No pagination is applied — all records export."""
+    rows = db.scalars(
+        select(PurchaseOrder)
+        .options(
+            selectinload(PurchaseOrder.supplier),
+            selectinload(PurchaseOrder.lines).selectinload(PurchaseOrderLine.product),
+        )
+        .order_by(PurchaseOrder.created_at.desc(), PurchaseOrder.order_date.desc(), PurchaseOrder.id.desc())
+    ).all()
+
+    headers = [
+        "PO ID", "PO Number", "Order Date", "Status",
+        "Supplier", "Supplier GSTIN", "Supplier Phone", "Supplier Email", "Supplier Address",
+        "PO Total", "Notes", "Created At",
+        "Line ID", "Item Code", "Product", "Item Description",
+        "Ordered Qty", "Received Qty", "Pending Qty",
+        "Rate", "UOM", "GST %", "Discount %", "Line Amount",
+    ]
+    data = []
+    for p in rows:
+        supplier = p.supplier
+        supplier_name = supplier.name if supplier else (p.supplier_name or "")
+        supplier_gstin = supplier.gstin if supplier else ""
+        supplier_phone = supplier.phone if supplier else ""
+        supplier_email = supplier.email if supplier else ""
+        supplier_address = supplier.address if supplier else ""
+        header = [
+            p.id, p.po_number,
+            p.order_date.isoformat() if p.order_date else "",
+            p.status.value,
+            supplier_name, supplier_gstin, supplier_phone, supplier_email, supplier_address,
+            p.total_amount, p.notes or "",
+            p.created_at.isoformat() if p.created_at else "",
+        ]
+        lines = p.lines or []
+        if not lines:
+            # Preserve orders that have no line items.
+            data.append(header + [""] * 11)
+            continue
+        for ln in lines:
+            product = ln.product
+            ordered = float(ln.quantity or 0)
+            received = float(ln.received_qty or 0)
+            item_code = ln.item_code or (product.item_code if product else "")
+            data.append(header + [
+                ln.id, item_code,
+                product.model if product else "",
+                ln.description or "",
+                ordered, received, max(ordered - received, 0),
+                ln.rate if ln.rate is not None else "",
+                ln.uom or (product.uom if product else ""),
+                ln.tax_percent if ln.tax_percent is not None else "",
+                ln.discount_percent if ln.discount_percent is not None else "",
+                ln.amount if ln.amount is not None else "",
+            ])
     return _csv_response(headers, data, "purchases.csv")
 
 
