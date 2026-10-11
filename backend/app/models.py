@@ -299,6 +299,37 @@ class Plant(Base):
     customer: Mapped[Customer | None] = relationship()
 
 
+class EmployeeStatus(str, enum.Enum):
+    active = "Active"
+    inactive = "Inactive"
+
+
+class Employee(Base):
+    """HR employee master (HR & Payroll Department / Employee Management)."""
+
+    __tablename__ = "employees"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    employee_code: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(160), index=True)
+    mobile: Mapped[str] = mapped_column(String(30), default="")
+    email: Mapped[str] = mapped_column(String(160), default="")
+    department: Mapped[str] = mapped_column(String(120), default="", index=True)
+    designation: Mapped[str] = mapped_column(String(120), default="", index=True)
+    joining_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Personal identification & bank details (sensitive, admin-only access).
+    aadhaar_number: Mapped[str] = mapped_column(String(20), default="")
+    pan_number: Mapped[str] = mapped_column(String(20), default="")
+    bank_account_number: Mapped[str] = mapped_column(String(40), default="")
+    ifsc_code: Mapped[str] = mapped_column(String(20), default="")
+    bank_name: Mapped[str] = mapped_column(String(160), default="")
+    branch_name: Mapped[str] = mapped_column(String(160), default="")
+    status: Mapped[EmployeeStatus] = mapped_column(
+        Enum(EmployeeStatus), default=EmployeeStatus.active, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 # ---------------------------------------------------------------------------
 # Raw material & purchase
 # ---------------------------------------------------------------------------

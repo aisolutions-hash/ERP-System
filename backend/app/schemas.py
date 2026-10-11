@@ -7,9 +7,9 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from .models import (
-    DispatchStatus, MovementType, OrderStatus, OrderType, PlanType, ProductCategory,
-    ProductionStatus, PurchaseStatus, QuotationStatus, QuotationType, UserRole,
-    normalize_quotation_company,
+    DispatchStatus, EmployeeStatus, MovementType, OrderStatus, OrderType, PlanType,
+    ProductCategory, ProductionStatus, PurchaseStatus, QuotationStatus, QuotationType,
+    UserRole, normalize_quotation_company,
 )
 
 
@@ -131,6 +131,51 @@ class SupplierUpdate(BaseModel):
 class SupplierOut(SupplierBase, ORMModel):
     id: int
     is_active: bool
+    created_at: datetime
+
+
+class EmployeeBase(BaseModel):
+    employee_code: str = Field(min_length=1, max_length=60)
+    name: str = Field(min_length=1, max_length=160)
+    mobile: str = ""
+    email: str = ""
+    department: str = ""
+    designation: str = ""
+    joining_date: Optional[date] = None
+    # Sensitive (admin-only). Plain strings — format is validated in the router so
+    # validation errors never echo the submitted value back to the client.
+    aadhaar_number: str = ""
+    pan_number: str = ""
+    bank_account_number: str = ""
+    ifsc_code: str = ""
+    bank_name: str = ""
+    branch_name: str = ""
+    status: EmployeeStatus = EmployeeStatus.active
+
+
+class EmployeeCreate(EmployeeBase):
+    pass
+
+
+class EmployeeUpdate(BaseModel):
+    employee_code: Optional[str] = None
+    name: Optional[str] = None
+    mobile: Optional[str] = None
+    email: Optional[str] = None
+    department: Optional[str] = None
+    designation: Optional[str] = None
+    joining_date: Optional[date] = None
+    aadhaar_number: Optional[str] = None
+    pan_number: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    bank_name: Optional[str] = None
+    branch_name: Optional[str] = None
+    status: Optional[EmployeeStatus] = None
+
+
+class EmployeeOut(EmployeeBase, ORMModel):
+    id: int
     created_at: datetime
 
 

@@ -23,6 +23,7 @@ import Reports from './pages/Reports'
 import Users from './pages/Users'
 import StockMovements from './pages/StockMovements'
 import PackagingList from './pages/PackagingList'
+import Employees from './pages/Employees'
 
 function RequireAuth({ children }) {
   const { user } = useAuth()
@@ -63,6 +64,7 @@ function App() {
             <Route path="suppliers" element={<Suppliers />} />
             <Route path="quotations" element={<Quotations />} />
             <Route path="packaging-lists" element={<PackagingList />} />
+            <Route path="employees" element={<Employees />} />
             <Route path="reports" element={<Reports />} />
             <Route path="users" element={<Users />} />
           </Route>

@@ -5,7 +5,7 @@ import {
   Truck, Users, Package, FileDown, ShieldCheck, LogOut, ListChecks,
   AlertTriangle, Store, BellRing, ClipboardList, GitBranch, LayoutGrid,
   ChevronsLeft, ChevronsRight, Menu, X, Layers, ArrowLeftRight, FileSpreadsheet, PackagePlus,
-  FileText,
+  FileText, Briefcase,
 } from 'lucide-react'
 import api from '../lib/api'
 import { useAuth } from '../context/AuthContext'
@@ -65,6 +65,12 @@ const SECTIONS = [
       { to: '/suppliers', label: 'Suppliers', icon: Package },
     ],
   },
+  {
+    label: 'HR & Payroll Department',
+    items: [
+      { to: '/employees', label: 'Employee Management', icon: Briefcase },
+    ],
+  },
 ]
 
 const TITLE_MAP = {
@@ -87,6 +93,7 @@ const TITLE_MAP = {
   '/alerts': { title: 'Alert Center', sub: 'System notifications' },
   '/customers': { title: 'Customers', sub: 'Customer master' },
   '/suppliers': { title: 'Suppliers', sub: 'Supplier master' },
+  '/employees': { title: 'Employee Management', sub: 'HR & Payroll Department' },
   '/reports': { title: 'Reports', sub: 'Business summaries & exports' },
   '/users': { title: 'Users', sub: 'User administration' },
 }
