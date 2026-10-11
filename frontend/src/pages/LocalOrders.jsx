@@ -277,18 +277,18 @@ export default function LocalOrders() {
   .header { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
   .header img { height: 56px; max-width: 180px; object-fit: contain; }
   .header .title { font-size: 22px; font-weight: 700; color: #111; line-height: 1.2; }
-  .header .sub-title { font-size: 13px; color: #666; margin-top: 2px; }
-  .generated { color: #666; font-size: 11px; margin-bottom: 16px; }
-  .meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 18px; border: 1px solid #ddd; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px; }
-  .meta .lbl { display: block; color: #888; font-size: 9px; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 2px; }
-  .meta .val { font-weight: 600; }
-  h2 { font-size: 13px; margin: 16px 0 8px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+  .header .sub-title { font-size: 13px; color: #222; margin-top: 2px; }
+  .generated { color: #222; font-size: 11px; margin-bottom: 16px; }
+  .meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 18px; border: 1px solid #999; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px; }
+  .meta .lbl { display: block; color: #222; font-size: 9px; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 2px; }
+  .meta .val { font-weight: 600; color: #111; }
+  h2 { font-size: 13px; margin: 16px 0 8px; border-bottom: 1px solid #999; padding-bottom: 4px; color: #111; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; font-size: 11px; }
-  th { background: #f4f4f4; text-transform: uppercase; font-size: 9px; letter-spacing: .4px; color: #555; }
+  th, td { border: 1px solid #999; padding: 6px 8px; text-align: left; font-size: 11px; color: #111; }
+  th { background: #f4f4f4; text-transform: uppercase; font-size: 9px; letter-spacing: .4px; color: #111; }
   .r { text-align: right; }
-  .total td { font-weight: 700; background: #fafafa; }
-  .foot { margin-top: 26px; font-size: 10px; color: #888; }
+  .total td { font-weight: 700; background: #fafafa; color: #111; }
+  .foot { margin-top: 26px; font-size: 10px; color: #222; }
   @media print { body { margin: 12mm; } }
 </style></head><body>
 <div class="header">
