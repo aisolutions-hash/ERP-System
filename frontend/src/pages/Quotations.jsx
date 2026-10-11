@@ -32,6 +32,15 @@ const STATUS_OPTIONS = [
   { value: 'Expired', label: 'Expired', className: 'bg-amber-100 text-amber-700' },
 ]
 
+// Company identities a quotation can be issued under. Mirrors the backend
+// allow-list (QUOTATION_COMPANY_NAMES) so the dropdown cannot drift from it.
+const COMPANY_OPTIONS = ['KALIKA ENTERPRISES', 'KALIKA INFOTECH']
+
+function normalizeCompanyName(value) {
+  const v = String(value || '').trim().toUpperCase()
+  return v.includes('INFOTECH') ? 'KALIKA INFOTECH' : 'KALIKA ENTERPRISES'
+}
+
 const EMPTY_LINE = {
   product_id: null,
   item_code: '',
@@ -101,7 +110,7 @@ function computeTotals(lines) {
 
 function buildQuotationHtml(q) {
   const total = computeTotals(q.lines || [])
-  const companyName = q.company_name || 'KALIKA ENTERPRISES'
+  const companyName = normalizeCompanyName(q.company_name)
   const companyAddress = q.company_address || 'Plot No. M-59, MIDC, AHMEDNAGAR'
   const companyPhone = q.company_phone || '+91 9405536016'
   const companyWebsite = q.company_website || 'www.kalikaindia.com'
@@ -215,12 +224,12 @@ function buildQuotationHtml(q) {
     <div class="signatory-inner">
       <img src="/assets/stamp.png" class="stamp" alt="Approved Stamp">
       <div class="signatory-text">Authorized Signatory</div>
-      <div class="signatory-sub">For Kalika Enterprises</div>
+      <div class="signatory-sub">For ${companyName}</div>
     </div>
   </div>
 
   <div class="contact">If you have any questions about this price quote, please contact ${contactEmail}</div>
-  <div class="footer">Quotation ${q.quotation_no} Rev. ${q.revision} | Kalika Enterprises</div>
+  <div class="footer">Quotation ${q.quotation_no} Rev. ${q.revision} | ${companyName}</div>
 </body>
 </html>`
 }
@@ -353,6 +362,7 @@ export default function Quotations() {
     setForm({
       ...EMPTY_FORM,
       ...q,
+      company_name: normalizeCompanyName(q.company_name),
       quote_date: q.quote_date || EMPTY_FORM.quote_date,
       valid_until: q.valid_until || '',
       lines: (q.lines || []).map((l) => ({
@@ -429,6 +439,7 @@ export default function Quotations() {
   }
 
   const validateForm = () => {
+    if (!COMPANY_OPTIONS.includes(form.company_name)) return 'Company name is required.'
     if (!form.customer_name.trim()) return 'Customer name is required.'
     if (!form.lines.length) return 'At least one line item is required.'
     for (const ln of form.lines) {
@@ -582,7 +593,7 @@ export default function Quotations() {
       setEmailForm({ ...data, attach_pdf: true })
       setEmailOpen(true)
     } catch (e) {
-      setEmailForm({ to: q.customer_email || '', cc: '', subject: `Quotation ${q.quotation_no} Rev. ${q.revision} - Kalika Enterprises`, message: '', attach_pdf: true })
+      setEmailForm({ to: q.customer_email || '', cc: '', subject: `Quotation ${q.quotation_no} Rev. ${q.revision} - ${normalizeCompanyName(q.company_name)}`, message: '', attach_pdf: true })
       setEmailOpen(true)
     }
     // keep detail for sending
@@ -773,6 +784,12 @@ export default function Quotations() {
             <div>
               <SectionHeader title="B. Quotation Details" />
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Company Name *</label>
+                  <select value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} className="input w-full">
+                    {COMPANY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
                 <div>
                   <label className="block text-xs text-slate-500 mb-1">Quotation Type *</label>
                   <select value={form.quotation_type} onChange={(e) => setForm({ ...form, quotation_type: e.target.value })} className="input w-full">

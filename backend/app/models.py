@@ -933,6 +933,26 @@ class TermsTemplate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+# Company identities a quotation can be issued under. The quotation form only
+# offers these values, and the API rejects anything else.
+QUOTATION_COMPANY_NAMES: tuple[str, ...] = ("KALIKA ENTERPRISES", "KALIKA INFOTECH")
+
+
+def normalize_quotation_company(value: str | None) -> str:
+    """Return the canonical company name for a case-insensitive match.
+
+    Raises ValueError for unsupported values so callers (e.g. the API schemas)
+    can reject them.
+    """
+    candidate = (value or "").strip()
+    for name in QUOTATION_COMPANY_NAMES:
+        if candidate.upper() == name.upper():
+            return name
+    raise ValueError(
+        "Company name must be one of: " + ", ".join(QUOTATION_COMPANY_NAMES)
+    )
+
+
 class Quotation(Base):
     """Customer quotation (commercial pre-order document)."""
 
@@ -959,7 +979,7 @@ class Quotation(Base):
     customer_gstin: Mapped[str] = mapped_column(String(40), default="")
 
     # Company information shown on the quotation document
-    company_name: Mapped[str] = mapped_column(String(255), default="Kalika Enterprises")
+    company_name: Mapped[str] = mapped_column(String(255), default="KALIKA ENTERPRISES")
     company_address: Mapped[str] = mapped_column(Text, default="")
     company_website: Mapped[str] = mapped_column(String(255), default="")
     company_phone: Mapped[str] = mapped_column(String(60), default="")

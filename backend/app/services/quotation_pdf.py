@@ -137,7 +137,7 @@ def _header_footer(canvas, doc, company: dict, q: Quotation):
     canvas.setFillColor(colors.HexColor("#64748b"))
     canvas.drawCentredString(
         width / 2, 12 * mm,
-        f"Quotation {q.quotation_no} Rev. {q.revision}  |  Kalika Enterprises",
+        f"Quotation {q.quotation_no} Rev. {q.revision}  |  {company['name']}",
     )
     canvas.drawRightString(width - 16 * mm, 12 * mm, f"Page {doc.page}")
 
@@ -365,7 +365,7 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
         [
             [stamp_img or ""],
             [Paragraph("<b>Authorized Signatory</b>", style_sign)],
-            [Paragraph("For Kalika Enterprises", style_sign_small)],
+            [Paragraph(f"For {company['name']}", style_sign_small)],
         ],
         colWidths=[55 * mm],
     )

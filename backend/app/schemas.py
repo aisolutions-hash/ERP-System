@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from .models import (
     DispatchStatus, MovementType, OrderStatus, OrderType, PlanType, ProductCategory,
     ProductionStatus, PurchaseStatus, QuotationStatus, QuotationType, UserRole,
+    normalize_quotation_company,
 )
 
 
@@ -1121,11 +1122,17 @@ class QuotationBase(BaseModel):
 
 
 class QuotationCreate(QuotationBase):
-    pass
+    @field_validator("company_name")
+    @classmethod
+    def _valid_company_name(cls, v: str) -> str:
+        return normalize_quotation_company(v)
 
 
 class QuotationUpdate(QuotationBase):
-    pass
+    @field_validator("company_name")
+    @classmethod
+    def _valid_company_name(cls, v: str) -> str:
+        return normalize_quotation_company(v)
 
 
 class QuotationOut(QuotationBase, ORMModel):

@@ -15,7 +15,7 @@ from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
 from ..models import (
     AuditLog, Customer, EmailLog, EmailType, Product, Quotation, QuotationLine,
-    QuotationStatus, QuotationType, TermsTemplate,
+    QuotationStatus, QuotationType, TermsTemplate, QUOTATION_COMPANY_NAMES,
 )
 from ..schemas import (
     QuotationCreate, QuotationEmailPreviewOut, QuotationEmailSendIn,
@@ -153,7 +153,7 @@ DEFAULT_TERMS = (
 def _apply_company_defaults(quotation: Quotation) -> None:
     """Populate company information defaults for a new quotation."""
     if not quotation.company_name:
-        quotation.company_name = "KALIKA ENTERPRISES"
+        quotation.company_name = QUOTATION_COMPANY_NAMES[0]
     if not quotation.company_address:
         quotation.company_address = "Plot No. M-59, MIDC, AHMEDNAGAR"
     if not quotation.company_website:
@@ -183,7 +183,8 @@ def _load_quotation(db: Session, quotation_id: int) -> Quotation:
 def _build_email_preview(q: Quotation) -> dict:
     """Build a default email preview for a quotation."""
     to = q.customer_email or ""
-    subject = f"Quotation {q.quotation_no} Rev. {q.revision} - Kalika Enterprises"
+    company_name = q.company_name or QUOTATION_COMPANY_NAMES[0]
+    subject = f"Quotation {q.quotation_no} Rev. {q.revision} - {company_name}"
     message = (
         f"Dear {q.customer_name or 'Customer'},\n\n"
         f"Please find attached our quotation {q.quotation_no} Rev. {q.revision}.\n\n"
@@ -191,7 +192,7 @@ def _build_email_preview(q: Quotation) -> dict:
         f"Valid Until: {q.valid_until or '—'}\n"
         f"Total Amount: INR {float(q.total_amount or 0):,.2f}\n\n"
         f"Kindly review and confirm at your earliest convenience.\n\n"
-        f"Best regards,\nKalika Enterprises"
+        f"Best regards,\n{company_name}"
     )
     return {"to": to, "cc": "", "subject": subject, "message": message}
 
