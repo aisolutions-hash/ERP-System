@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Plus, Pencil, Trash2, Search, Users, UserCheck, UserX, ShieldCheck,
-  Upload, Download, FileText,
+  Plus, Pencil, Trash2, Search, Users, User, UserCheck, UserX, ShieldCheck,
+  Upload, Download, FileText, ChevronLeft, ChevronRight,
 } from 'lucide-react'
 import api, { downloadFile } from '../lib/api'
-import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard } from '../components/ui'
+import {
+  PageHeader, Card, Modal, Loading, Empty, Badge, StatCard, SectionHeader,
+} from '../components/ui'
 import Table from '../components/Table'
 import { useAuth } from '../context/AuthContext'
 
@@ -65,6 +67,23 @@ const downloadCsv = (rows, filename) => {
   window.URL.revokeObjectURL(url)
 }
 
+const PAGE_SIZES = [25, 50, 100]
+
+// Render a value, falling back to an em dash for blank/missing data.
+const dv = (v) => (v === null || v === undefined || v === '' ? '—' : v)
+
+// Read-only labelled field used in the employee details window.
+function DetailField({ label, value, mono = false }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[0.6875rem] uppercase tracking-wide text-slate-400">{label}</div>
+      <div className={`mt-0.5 text-sm text-slate-800 break-words ${mono ? 'font-mono' : ''}`}>
+        {dv(value)}
+      </div>
+    </div>
+  )
+}
+
 export default function Employees() {
   const { user } = useAuth()
   const isHr = user?.role === 'admin'
@@ -77,6 +96,15 @@ export default function Employees() {
   const [statusFilter, setStatusFilter] = useState('')
   const [options, setOptions] = useState({ departments: [], designations: [] })
   const [selected, setSelected] = useState(() => new Set())
+  const [total, setTotal] = useState(0)
+  const [statusCounts, setStatusCounts] = useState({})
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(25)
+
+  // read-only details window
+  const [detail, setDetail] = useState(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const editFromDetailRef = useRef(null)
 
   // employee form
   const [modal, setModal] = useState(null)
@@ -105,11 +133,15 @@ export default function Employees() {
       .get('/employees', {
         params: {
           search, department: dept, designation: desig, status: statusFilter,
-          page_size: 500,
+          page, page_size: pageSize,
         },
       })
-      .then((res) => setItems(res.data.items))
-      .catch(() => setItems([]))
+      .then((res) => {
+        setItems(res.data.items)
+        setTotal(res.data.total ?? res.data.items.length)
+        setStatusCounts(res.data.status_counts || {})
+      })
+      .catch(() => { setItems([]); setTotal(0); setStatusCounts({}) })
       .finally(() => setLoading(false))
   }
 
@@ -120,9 +152,18 @@ export default function Employees() {
   useEffect(loadOptions, [])
   useEffect(() => {
     setSelected(new Set())
+    setPage(1)
+  }, [search, dept, desig, statusFilter, pageSize])
+  useEffect(() => {
     const t = setTimeout(load, 300)
     return () => clearTimeout(t)
-  }, [search, dept, desig, statusFilter])
+  }, [search, dept, desig, statusFilter, page, pageSize])
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  useEffect(() => {
+    // Keep the page in range after deletes / filter changes shrink the result.
+    if (page > totalPages) setPage(totalPages)
+  }, [totalPages, page])
 
   // ---- selection ----
   const allSelected = items.length > 0 && items.every((i) => selected.has(i.id))
@@ -134,7 +175,7 @@ export default function Employees() {
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(items.map((i) => i.id)))
 
   // ---- employee form ----
-  const openCreate = () => { setForm(empty); setErrors({}); setModal('create') }
+  const openCreate = () => { editFromDetailRef.current = null; setForm(empty); setErrors({}); setModal('create') }
   const openEdit = async (row) => {
     setErrors({})
     try {
@@ -145,14 +186,39 @@ export default function Employees() {
     }
     setModal('edit')
   }
+  const closeEdit = () => { editFromDetailRef.current = null; setModal(null) }
   const remove = async (row) => {
     if (!window.confirm(`Delete employee "${row.name}"?`)) return
     try {
       await api.delete(`/employees/${row.id}`)
-      load()
+      setDetail((d) => (d && d.id === row.id ? null : d))
+      load(); loadOptions()
     } catch (err) {
       alert(err.response?.data?.detail || 'Delete failed')
     }
+  }
+
+  // ---- details window ----
+  const openDetail = async (row) => {
+    setDetail(row)
+    setDetailLoading(true)
+    try {
+      const res = await api.get(`/employees/${row.id}`)
+      setDetail(res.data)
+    } catch {
+      // fall back to the row data already shown
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+  const closeDetail = () => { setDetail(null); setDetailLoading(false) }
+  const editFromDetail = (row) => {
+    editFromDetailRef.current = row.id
+    setDetail(null)
+    openEdit(row)
+  }
+  const downloadDetailPdf = (row) => {
+    downloadFile(`/employees/${row.id}/pdf`, `employee_${row.employee_code || row.id}.pdf`)
   }
 
   const validateSensitive = () => {
@@ -180,8 +246,18 @@ export default function Employees() {
       if (!isHr) SENSITIVE_FIELDS.forEach((k) => delete payload[k])
       if (modal === 'create') await api.post('/employees', payload)
       else await api.patch(`/employees/${form.id}`, payload)
+      const reopenId = editFromDetailRef.current
+      editFromDetailRef.current = null
       setModal(null)
       load(); loadOptions()
+      if (reopenId != null) {
+        try {
+          const res = await api.get(`/employees/${reopenId}`)
+          setDetail(res.data)
+        } catch {
+          // details window stays closed if the refresh fails
+        }
+      }
     } catch (err) {
       alert(err.response?.data?.detail || 'Save failed')
     } finally {
@@ -194,7 +270,7 @@ export default function Employees() {
     setExportFormat('csv'); setExportScope(scope); setExportColumns(DEFAULT_COLUMNS)
     setUnmask(false); setExportOpen(true)
   }
-  const anySensitive = exportColumns.some((c) => SENSITIVE_FIELDS.includes(c.field))
+  const anySensitive = exportColumns.some((f) => SENSITIVE_FIELDS.includes(f))
   const runExport = () => {
     if (exportScope === 'selected' && selected.size === 0) {
       window.alert('Select at least one employee to export.')
@@ -288,6 +364,7 @@ export default function Employees() {
         <input
           type="checkbox"
           checked={selected.has(r.id)}
+          onClick={(e) => e.stopPropagation()}
           onChange={() => toggleSelect(r.id)}
           aria-label={`Select ${r.name}`}
         />
@@ -304,15 +381,6 @@ export default function Employees() {
     { key: 'pan_number', label: 'PAN', render: (r) => <span className="font-mono text-xs text-slate-500">{r.pan_number ? maskValue(r.pan_number) : '—'}</span> },
     { key: 'bank_account_number', label: 'Bank A/c', render: (r) => <span className="font-mono text-xs text-slate-500">{r.bank_account_number ? maskValue(r.bank_account_number) : '—'}</span> },
     { key: 'status', label: 'Status', render: (r) => <Badge className={r.status === 'Active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}>{r.status}</Badge> },
-    {
-      key: 'actions', label: '',
-      render: (r) => (
-        <div className="flex gap-1.5">
-          <button onClick={() => openEdit(r)} className="btn btn-ghost p-1.5" title="Edit"><Pencil size={15} /></button>
-          <button onClick={() => remove(r)} className="btn btn-ghost p-1.5 text-red-400" title="Delete"><Trash2 size={15} /></button>
-        </div>
-      ),
-    },
   ]
 
   const field = (label, key, props = {}, error = '') => (
@@ -328,8 +396,8 @@ export default function Employees() {
     </div>
   )
 
-  const active = items.filter((i) => i.status === 'Active').length
-  const inactive = items.length - active
+  const active = statusCounts.Active ?? 0
+  const inactive = statusCounts.Inactive ?? 0
   const previewColumns = useMemo(() => {
     if (!preview) return []
     return [
@@ -367,7 +435,7 @@ export default function Employees() {
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-5">
-        <StatCard label="Total Employees" value={items.length} icon={Users} iconClass="bg-amber-50 text-amber-600" />
+        <StatCard label="Total Employees" value={total} icon={Users} iconClass="bg-amber-50 text-amber-600" />
         <StatCard label="Active" value={active} icon={UserCheck} iconClass="bg-green-50 text-green-600" valueClass="text-green-600" />
         <StatCard label="Inactive" value={inactive} icon={UserX} iconClass="bg-gray-100 text-gray-500" />
         <StatCard label="Selected" value={selected.size} icon={FileText} iconClass="bg-blue-50 text-blue-600" />
@@ -406,15 +474,57 @@ export default function Employees() {
         ) : items.length === 0 ? (
           <Empty />
         ) : (
-          <Table columns={columns} data={items} keyField="id" stickyColumns={['employee_code']} dense />
+          <Table
+            columns={columns}
+            data={items}
+            keyField="id"
+            onRowClick={openDetail}
+            stickyColumns={['employee_code']}
+            dense
+          />
         )}
       </Card>
 
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mt-4">
+        <div className="text-xs text-slate-500">
+          {total === 0
+            ? 'No employees'
+            : `Showing ${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}`}
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={pageSize}
+            onChange={(e) => setPageSize(Number(e.target.value))}
+            className="input py-1.5 text-sm w-28"
+            aria-label="Rows per page"
+          >
+            {PAGE_SIZES.map((n) => <option key={n} value={n}>{n} / page</option>)}
+          </select>
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1}
+            className="btn btn-secondary p-2 disabled:opacity-40"
+            aria-label="Previous page"
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <span className="text-xs text-slate-600 tabular-nums">Page {page} of {totalPages}</span>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages}
+            className="btn btn-secondary p-2 disabled:opacity-40"
+            aria-label="Next page"
+          >
+            <ChevronRight size={16} />
+          </button>
+        </div>
+      </div>
+
       {/* ---------------- Employee form ---------------- */}
       {modal && (
-        <Modal open title={modal === 'create' ? 'Add Employee' : 'Edit Employee'} onClose={() => setModal(null)} wide
+        <Modal open title={modal === 'create' ? 'Add Employee' : 'Edit Employee'} onClose={closeEdit} wide
           footer={<>
-            <button type="button" onClick={() => setModal(null)} className="btn btn-secondary">Cancel</button>
+            <button type="button" onClick={closeEdit} className="btn btn-secondary">Cancel</button>
             <button type="submit" form="employee-form" disabled={saving} className="btn btn-primary">{saving ? 'Saving…' : 'Save'}</button>
           </>}>
           <form onSubmit={save} id="employee-form" className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -474,7 +584,7 @@ export default function Employees() {
               <div className="flex gap-2 flex-wrap">
                 <button onClick={() => setExportScope('filtered')}
                   className={`btn ${exportScope === 'filtered' ? 'btn-primary' : 'btn-secondary'}`}>
-                  Filtered list ({items.length})
+                  Filtered list ({total})
                 </button>
                 <button onClick={() => setExportScope('selected')} disabled={selected.size === 0}
                   className={`btn ${exportScope === 'selected' ? 'btn-primary' : 'btn-secondary'}`}>
@@ -589,6 +699,87 @@ export default function Employees() {
               </>
             )}
           </div>
+        </Modal>
+      )}
+
+      {/* ---------------- Details window ---------------- */}
+      {detail && (
+        <Modal
+          open
+          wide
+          title="Employee Details"
+          subtitle={detail.name}
+          onClose={closeDetail}
+          footer={
+            <div className="flex flex-wrap gap-2 w-full justify-end">
+              <button onClick={() => editFromDetail(detail)} className="btn btn-secondary">
+                <Pencil size={15} /> Edit Employee
+              </button>
+              <button onClick={() => remove(detail)} className="btn btn-secondary text-red-600">
+                <Trash2 size={15} /> Delete Employee
+              </button>
+              <button onClick={() => downloadDetailPdf(detail)} className="btn btn-secondary">
+                <Download size={15} /> Download PDF
+              </button>
+              <button onClick={closeDetail} className="btn btn-primary">Close</button>
+            </div>
+          }
+        >
+          {detailLoading ? (
+            <Loading />
+          ) : (
+            <div className="space-y-6">
+              <div className="flex items-center gap-3">
+                <div className="h-12 w-12 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                  <User size={22} />
+                </div>
+                <div className="min-w-0">
+                  <div className="font-semibold text-slate-800 truncate">{dv(detail.name)}</div>
+                  <div className="text-xs text-slate-500 font-mono">{dv(detail.employee_code)}</div>
+                </div>
+                <Badge className={`ml-auto ${detail.status === 'Active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                  {detail.status || '—'}
+                </Badge>
+              </div>
+
+              <section>
+                <SectionHeader title="Employment" />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 mt-3">
+                  <DetailField label="Employee ID" value={detail.employee_code} mono />
+                  <DetailField label="Employee Name" value={detail.name} />
+                  <DetailField label="Department" value={detail.department} />
+                  <DetailField label="Designation" value={detail.designation} />
+                  <DetailField label="Joining Date" value={detail.joining_date} />
+                  <DetailField label="Employment Status" value={detail.status} />
+                </div>
+              </section>
+
+              <section>
+                <SectionHeader title="Contact" />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 mt-3">
+                  <DetailField label="Mobile Number" value={detail.mobile} mono />
+                  <DetailField label="Email" value={detail.email} />
+                </div>
+              </section>
+
+              {isHr && (
+                <section>
+                  <SectionHeader
+                    title="Personal & Bank Details"
+                    right={<span className="text-[0.6875rem] text-slate-400">HR / Admin only</span>}
+                  />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 mt-3">
+                    <DetailField label="Aadhaar Number" value={detail.aadhaar_number} mono />
+                    <DetailField label="PAN Number" value={detail.pan_number} mono />
+                    <DetailField label="Bank Account Number" value={detail.bank_account_number} mono />
+                    <DetailField label="IFSC Code" value={detail.ifsc_code} mono />
+                    <DetailField label="Bank Name" value={detail.bank_name} />
+                    <DetailField label="Branch Name" value={detail.branch_name} />
+                  </div>
+                </section>
+              )}
+            </div>
+          )}
         </Modal>
       )}
     </div>

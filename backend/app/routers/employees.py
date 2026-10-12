@@ -23,7 +23,9 @@ from ..crud import get_or_404, write_audit
 from ..database import get_db
 from ..models import Employee, EmployeeStatus, UserRole
 from ..schemas import EmployeeCreate, EmployeeOut, EmployeeUpdate
-from ..services.employee_pdf import build_employees_pdf_bytes
+from ..services.employee_pdf import (
+    build_employee_detail_pdf_bytes, build_employees_pdf_bytes,
+)
 from ..services.import_common import (
     build_column_map, cell_text, parse_date_value, read_table, row_to_dict,
 )
@@ -153,6 +155,19 @@ def _parse_status(value: str) -> str | None:
         if st.value.lower() == value.strip().lower():
             return st.value
     return None
+
+
+def _validated_status(value: str) -> str:
+    """Normalize a list/export status filter, rejecting unknown values with a
+    client error instead of binding an invalid enum (which would 500)."""
+    if not value or not value.strip():
+        return ""
+    parsed = _parse_status(value)
+    if parsed is None:
+        allowed = ", ".join(st.value for st in EmployeeStatus)
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"Invalid status filter. Allowed values: {allowed}")
+    return parsed
 
 
 def _parse_import_rows(headers, rows, existing_codes: set[str]):
@@ -338,6 +353,7 @@ def list_employees(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=500),
 ):
+    status_filter = _validated_status(status_filter)
     stmt = select(Employee)
     if search:
         like = f"%{search}%"
@@ -352,11 +368,18 @@ def list_employees(
     if status_filter:
         stmt = stmt.where(Employee.status == status_filter)
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
+    status_counts = {
+        st.value: db.scalar(
+            select(func.count()).select_from(stmt.where(Employee.status == st).subquery())
+        )
+        for st in EmployeeStatus
+    }
     rows = db.scalars(
         stmt.order_by(Employee.employee_code).offset((page - 1) * page_size).limit(page_size)
     ).all()
     return {"items": [_serialize(e, viewer, full=False) for e in rows],
-            "total": total, "page": page, "page_size": page_size}
+            "total": total, "page": page, "page_size": page_size,
+            "status_counts": status_counts}
 
 
 @router.get("/filters", response_model=dict)
@@ -511,6 +534,7 @@ def export_employees(
         raise HTTPException(status.HTTP_403_FORBIDDEN,
                             "Not permitted to export sensitive fields")
 
+    status_filter = _validated_status(status_filter)
     fields = _resolve_export_fields(columns, include_sensitive, viewer)
     labels = [EXPORT_LABELS[f] for f in fields]
     unmask = bool(unmask_sensitive and include_sensitive and viewer.role == UserRole.admin)
@@ -584,6 +608,26 @@ def create_employee(body: EmployeeCreate, db: Annotated[Session, Depends(get_db)
 def get_employee(employee_id: int, db: Annotated[Session, Depends(get_db)],
                  viewer: CurrentUser):
     return _serialize(get_or_404(db, Employee, employee_id), viewer, full=True)
+
+
+@router.get("/{employee_id}/pdf")
+def employee_detail_pdf(employee_id: int, db: Annotated[Session, Depends(get_db)],
+                        viewer: CurrentUser):
+    """Download a single employee's details as a PDF.
+
+    Sensitive fields follow the same visibility rules as the JSON API: full for
+    admins, masked/blanked for everyone else.
+    """
+    emp = get_or_404(db, Employee, employee_id)
+    data = _serialize(emp, viewer, full=True)
+    pdf = build_employee_detail_pdf_bytes(data)
+    code = re.sub(r"[^A-Za-z0-9_.-]", "_", str(data.get("employee_code") or employee_id))
+    filename = f"employee_{code}.pdf"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 @router.patch("/{employee_id}", response_model=EmployeeOut)
