@@ -56,6 +56,23 @@ _COLUMN_MIGRATIONS = [
     ("employees", "ifsc_code", "VARCHAR(20) DEFAULT ''"),
     ("employees", "bank_name", "VARCHAR(160) DEFAULT ''"),
     ("employees", "branch_name", "VARCHAR(160) DEFAULT ''"),
+    ("employees", "pf_applicable", "VARCHAR(30) DEFAULT ''"),
+    ("employees", "uan", "VARCHAR(20) DEFAULT ''"),
+    ("employees", "pf_member_id", "VARCHAR(60) DEFAULT ''"),
+    ("employees", "pf_joining_date", "DATE"),
+    ("employees", "pf_exit_date", "DATE"),
+    ("employees", "previous_pf_membership", "VARCHAR(20) DEFAULT ''"),
+    ("employees", "esic_applicable", "VARCHAR(30) DEFAULT ''"),
+    ("employees", "esic_ip_number", "VARCHAR(30) DEFAULT ''"),
+    ("employees", "esic_joining_date", "DATE"),
+    ("employees", "esic_exit_date", "DATE"),
+    ("employees", "esic_registration_status", "VARCHAR(30) DEFAULT ''"),
+    ("employees", "verification_status", "VARCHAR(30) DEFAULT ''"),
+    ("employees", "verified_by", "VARCHAR(160) DEFAULT ''"),
+    ("employees", "verification_date", "DATE"),
+    ("employees", "remarks", "VARCHAR(500) DEFAULT ''"),
+    ("employees", "supporting_document_ref", "VARCHAR(255) DEFAULT ''"),
+    ("employees", "job_leave_date", "DATE"),
 ]
 
 # Internal stock locations seeded as Plants (Main Store = plant_id NULL).

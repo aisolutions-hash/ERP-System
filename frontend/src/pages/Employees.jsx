@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Plus, Pencil, Trash2, Search, Users, User, UserCheck, UserX, ShieldCheck,
-  Upload, Download, FileText, ChevronLeft, ChevronRight,
+  Upload, Download, FileText, ChevronLeft, ChevronRight, Settings2, CheckCircle2,
 } from 'lucide-react'
 import api, { downloadFile } from '../lib/api'
 import {
@@ -44,6 +44,25 @@ const DEFAULT_COLUMNS = EXPORT_COLUMNS.filter((c) => !SENSITIVE_FIELDS.includes(
 const AADHAAR_RE = /^[2-9]\d{11}$/
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/
 const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/
+
+// Advanced Edit (statutory / payroll) fields, option sets and rules.
+const ADVANCED_EMPTY = {
+  pf_applicable: '', uan: '', pf_member_id: '', pf_joining_date: '', pf_exit_date: '',
+  previous_pf_membership: '', esic_applicable: '', esic_ip_number: '', esic_joining_date: '',
+  esic_exit_date: '', esic_registration_status: '', verification_status: '', verified_by: '',
+  verification_date: '', remarks: '', supporting_document_ref: '', job_leave_date: '',
+}
+const ADVANCED_DATE_FIELDS = [
+  'pf_joining_date', 'pf_exit_date', 'esic_joining_date', 'esic_exit_date',
+  'verification_date', 'job_leave_date',
+]
+const APPLICABILITY = ['', 'Yes', 'No', 'Pending Verification']
+const PREVIOUS_PF = ['', 'Yes', 'No', 'Unknown']
+const ESIC_REG_STATUS = ['', 'Not Registered', 'Pending', 'Registered', 'Inactive']
+const VERIFICATION_OPTIONS = ['', 'Pending', 'Verified', 'Rejected']
+const UAN_RE = /^\d{12}$/
+const ESIC_IP_RE = /^\d{10,17}$/
+const PF_MEMBER_RE = /^[A-Z0-9/-]{3,30}$/
 
 const maskValue = (v) => {
   const s = v || ''
@@ -105,6 +124,13 @@ export default function Employees() {
   const [detail, setDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const editFromDetailRef = useRef(null)
+
+  // advanced edit (statutory / payroll details) window
+  const [advBase, setAdvBase] = useState(null)
+  const [advForm, setAdvForm] = useState(ADVANCED_EMPTY)
+  const [advErrors, setAdvErrors] = useState({})
+  const [advSaving, setAdvSaving] = useState(false)
+  const [flash, setFlash] = useState('')
 
   // employee form
   const [modal, setModal] = useState(null)
@@ -219,6 +245,68 @@ export default function Employees() {
   }
   const downloadDetailPdf = (row) => {
     downloadFile(`/employees/${row.id}/pdf`, `employee_${row.employee_code || row.id}.pdf`)
+  }
+
+  // ---- advanced edit ----
+  const openAdvanced = async (row) => {
+    setAdvErrors({})
+    let base = row
+    try {
+      const res = await api.get(`/employees/${row.id}`)
+      base = res.data
+    } catch {
+      // fall back to the row data already loaded
+    }
+    const filled = { ...ADVANCED_EMPTY }
+    Object.keys(ADVANCED_EMPTY).forEach((k) => { filled[k] = base[k] ?? '' })
+    setAdvForm(filled)
+    setAdvBase(base)
+  }
+  const closeAdvanced = () => { setAdvBase(null); setAdvErrors({}) }
+
+  const advValidate = () => {
+    const e = {}
+    const uan = (advForm.uan || '').trim()
+    if (uan && !UAN_RE.test(uan)) e.uan = 'Invalid UAN (12 digits)'
+    const ip = (advForm.esic_ip_number || '').trim()
+    if (ip && !ESIC_IP_RE.test(ip)) e.esic_ip_number = 'Invalid ESIC IP Number (10–17 digits)'
+    const member = (advForm.pf_member_id || '').trim().toUpperCase()
+    if (member && !PF_MEMBER_RE.test(member)) e.pf_member_id = 'Invalid PF Member ID'
+    if (advForm.pf_joining_date && advForm.pf_exit_date
+      && advForm.pf_exit_date < advForm.pf_joining_date) {
+      e.pf_exit_date = 'PF Exit Date cannot be before PF Joining Date'
+    }
+    if (advForm.esic_joining_date && advForm.esic_exit_date
+      && advForm.esic_exit_date < advForm.esic_joining_date) {
+      e.esic_exit_date = 'ESIC Exit Date cannot be before ESIC Joining Date'
+    }
+    const jd = advBase?.joining_date || ''
+    if (jd && advForm.job_leave_date && advForm.job_leave_date < jd) {
+      e.job_leave_date = 'Job Leave Date cannot be before Joining Date'
+    }
+    setAdvErrors(e)
+    return Object.keys(e).length === 0
+  }
+
+  const saveAdvanced = async (e) => {
+    e.preventDefault()
+    if (!advValidate()) return
+    setAdvSaving(true)
+    try {
+      const payload = { ...advForm }
+      ADVANCED_DATE_FIELDS.forEach((k) => { payload[k] = payload[k] || null })
+      const res = await api.patch(`/employees/${advBase.id}`, payload)
+      setDetail((d) => (d && d.id === advBase.id ? res.data : d))
+      setAdvBase(null)
+      load(); loadOptions()
+      setFlash(`Advanced details saved for ${res.data.name}`)
+      setTimeout(() => setFlash(''), 5000)
+    } catch (err) {
+      // Keep the modal (and typed values) open so nothing is lost on failure.
+      alert(err.response?.data?.detail || 'Save failed')
+    } finally {
+      setAdvSaving(false)
+    }
   }
 
   const validateSensitive = () => {
@@ -396,6 +484,33 @@ export default function Employees() {
     </div>
   )
 
+  const advInput = (label, key, props = {}, error = '') => (
+    <div>
+      <label className="block text-xs text-slate-500 mb-1">{label}</label>
+      <input
+        value={advForm[key] ?? ''}
+        onChange={(e) => setAdvForm({ ...advForm, [key]: e.target.value })}
+        className="input"
+        {...props}
+      />
+      {error && <div className="text-[0.6875rem] text-red-500 mt-1">{error}</div>}
+    </div>
+  )
+
+  const advSelect = (label, key, choices, error = '') => (
+    <div>
+      <label className="block text-xs text-slate-500 mb-1">{label}</label>
+      <select
+        value={advForm[key] ?? ''}
+        onChange={(e) => setAdvForm({ ...advForm, [key]: e.target.value })}
+        className="input"
+      >
+        {choices.map((c) => <option key={c || 'blank'} value={c}>{c || '—'}</option>)}
+      </select>
+      {error && <div className="text-[0.6875rem] text-red-500 mt-1">{error}</div>}
+    </div>
+  )
+
   const active = statusCounts.Active ?? 0
   const inactive = statusCounts.Inactive ?? 0
   const previewColumns = useMemo(() => {
@@ -421,6 +536,11 @@ export default function Employees() {
 
   return (
     <div className="animate-fade-in-up">
+      {flash && (
+        <div className="mb-4 rounded-lg bg-green-50 text-green-700 text-sm px-4 py-3 flex items-center gap-2">
+          <CheckCircle2 size={16} /> {flash}
+        </div>
+      )}
       <PageHeader
         title="Employee Management"
         subtitle="HR & Payroll Department"
@@ -712,6 +832,11 @@ export default function Employees() {
           onClose={closeDetail}
           footer={
             <div className="flex flex-wrap gap-2 w-full justify-end">
+              {isHr && (
+                <button onClick={() => openAdvanced(detail)} className="btn btn-secondary">
+                  <Settings2 size={15} /> Advanced Edit
+                </button>
+              )}
               <button onClick={() => editFromDetail(detail)} className="btn btn-secondary">
                 <Pencil size={15} /> Edit Employee
               </button>
@@ -780,6 +905,73 @@ export default function Employees() {
               )}
             </div>
           )}
+        </Modal>
+      )}
+
+      {/* ---------------- Advanced Employee Details ---------------- */}
+      {advBase && (
+        <Modal
+          open
+          wide
+          title="Advanced Employee Details"
+          subtitle={advBase.name}
+          onClose={closeAdvanced}
+          footer={
+            <>
+              <button type="button" onClick={closeAdvanced} className="btn btn-secondary">Cancel</button>
+              <button type="submit" form="employee-advanced-form" disabled={advSaving} className="btn btn-primary">
+                {advSaving ? 'Saving…' : 'Save'}
+              </button>
+            </>
+          }
+        >
+          <form id="employee-advanced-form" onSubmit={saveAdvanced} className="space-y-6">
+            <section>
+              <SectionHeader title="PF / UAN Details" />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
+                {advSelect('PF Applicable', 'pf_applicable', APPLICABILITY)}
+                {advInput('UAN (Universal Account Number)', 'uan', { placeholder: '12 digits', inputMode: 'numeric' }, advErrors.uan)}
+                {advInput('PF Member ID', 'pf_member_id', { placeholder: 'e.g. MH/BAN/12345/000/0001234' }, advErrors.pf_member_id)}
+                {advSelect('Previous PF Membership', 'previous_pf_membership', PREVIOUS_PF)}
+                {advInput('PF Joining Date', 'pf_joining_date', { type: 'date' })}
+                {advInput('PF Exit Date', 'pf_exit_date', { type: 'date' }, advErrors.pf_exit_date)}
+              </div>
+            </section>
+
+            <section>
+              <SectionHeader title="ESIC Details" />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
+                {advSelect('ESIC Applicable', 'esic_applicable', APPLICABILITY)}
+                {advInput('ESIC Insurance / IP Number', 'esic_ip_number', { inputMode: 'numeric' }, advErrors.esic_ip_number)}
+                {advInput('ESIC Joining Date', 'esic_joining_date', { type: 'date' })}
+                {advInput('ESIC Exit Date', 'esic_exit_date', { type: 'date' }, advErrors.esic_exit_date)}
+                {advSelect('Registration Status', 'esic_registration_status', ESIC_REG_STATUS)}
+              </div>
+            </section>
+
+            <section>
+              <SectionHeader title="Verification & Record Management" />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
+                {advSelect('Verification Status', 'verification_status', VERIFICATION_OPTIONS)}
+                {advInput('Verified By', 'verified_by')}
+                {advInput('Verification Date', 'verification_date', { type: 'date' })}
+                {advInput('Supporting Document Reference', 'supporting_document_ref', { placeholder: 'Reference / file name / URL' })}
+                <div className="md:col-span-2">
+                  {advInput('Remarks', 'remarks')}
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <SectionHeader
+                title="Employment Exit"
+                right={<span className="text-[0.6875rem] text-slate-400">Leave blank if currently employed</span>}
+              />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
+                {advInput('Job Leave Date / Last Working Date', 'job_leave_date', { type: 'date' }, advErrors.job_leave_date)}
+              </div>
+            </section>
+          </form>
         </Modal>
       )}
     </div>

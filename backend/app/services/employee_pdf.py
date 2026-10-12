@@ -176,6 +176,7 @@ def build_employee_detail_pdf_bytes(
             ("Designation", data.get("designation")),
             ("Joining Date", data.get("joining_date")),
             ("Employment Status", data.get("status")),
+            ("Job Leave Date", data.get("job_leave_date")),
         ]),
         ("Contact", [
             ("Mobile Number", data.get("mobile")),
@@ -188,6 +189,28 @@ def build_employee_detail_pdf_bytes(
             ("IFSC Code", data.get("ifsc_code")),
             ("Bank Name", data.get("bank_name")),
             ("Branch Name", data.get("branch_name")),
+        ]),
+        ("PF / UAN Details", [
+            ("PF Applicable", data.get("pf_applicable")),
+            ("UAN", data.get("uan")),
+            ("PF Member ID", data.get("pf_member_id")),
+            ("PF Joining Date", data.get("pf_joining_date")),
+            ("PF Exit Date", data.get("pf_exit_date")),
+            ("Previous PF Membership", data.get("previous_pf_membership")),
+        ]),
+        ("ESIC Details", [
+            ("ESIC Applicable", data.get("esic_applicable")),
+            ("ESIC IP Number", data.get("esic_ip_number")),
+            ("ESIC Joining Date", data.get("esic_joining_date")),
+            ("ESIC Exit Date", data.get("esic_exit_date")),
+            ("Registration Status", data.get("esic_registration_status")),
+        ]),
+        ("Verification & Record", [
+            ("Verification Status", data.get("verification_status")),
+            ("Verified By", data.get("verified_by")),
+            ("Verification Date", data.get("verification_date")),
+            ("Remarks", data.get("remarks")),
+            ("Supporting Document Reference", data.get("supporting_document_ref")),
         ]),
     ]
     for title, rows in sections:

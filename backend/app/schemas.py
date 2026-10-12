@@ -150,6 +150,26 @@ class EmployeeBase(BaseModel):
     ifsc_code: str = ""
     bank_name: str = ""
     branch_name: str = ""
+    # Advanced Edit — statutory / payroll & verification (all optional). Choice
+    # fields use plain strings validated in the router (never echo submitted
+    # values), dates are optional and nullable.
+    pf_applicable: str = ""
+    uan: str = ""
+    pf_member_id: str = ""
+    pf_joining_date: Optional[date] = None
+    pf_exit_date: Optional[date] = None
+    previous_pf_membership: str = ""
+    esic_applicable: str = ""
+    esic_ip_number: str = ""
+    esic_joining_date: Optional[date] = None
+    esic_exit_date: Optional[date] = None
+    esic_registration_status: str = ""
+    verification_status: str = ""
+    verified_by: str = ""
+    verification_date: Optional[date] = None
+    remarks: str = ""
+    supporting_document_ref: str = ""
+    job_leave_date: Optional[date] = None
     status: EmployeeStatus = EmployeeStatus.active
 
 
@@ -171,6 +191,23 @@ class EmployeeUpdate(BaseModel):
     ifsc_code: Optional[str] = None
     bank_name: Optional[str] = None
     branch_name: Optional[str] = None
+    pf_applicable: Optional[str] = None
+    uan: Optional[str] = None
+    pf_member_id: Optional[str] = None
+    pf_joining_date: Optional[date] = None
+    pf_exit_date: Optional[date] = None
+    previous_pf_membership: Optional[str] = None
+    esic_applicable: Optional[str] = None
+    esic_ip_number: Optional[str] = None
+    esic_joining_date: Optional[date] = None
+    esic_exit_date: Optional[date] = None
+    esic_registration_status: Optional[str] = None
+    verification_status: Optional[str] = None
+    verified_by: Optional[str] = None
+    verification_date: Optional[date] = None
+    remarks: Optional[str] = None
+    supporting_document_ref: Optional[str] = None
+    job_leave_date: Optional[date] = None
     status: Optional[EmployeeStatus] = None
 
 

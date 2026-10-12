@@ -35,6 +35,7 @@ router = APIRouter(prefix="/employees", tags=["employees"])
 SENSITIVE_FIELDS = (
     "aadhaar_number", "pan_number", "bank_account_number",
     "ifsc_code", "bank_name", "branch_name",
+    "uan", "pf_member_id", "esic_ip_number",
 )
 MASKED_FIELDS = ("aadhaar_number", "pan_number", "bank_account_number")
 
@@ -42,6 +43,98 @@ MASKED_FIELDS = ("aadhaar_number", "pan_number", "bank_account_number")
 AADHAAR_RE = re.compile(r"^[2-9]\d{11}$")
 PAN_RE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
 IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
+
+# --- Advanced Edit (PF / UAN, ESIC, verification, employment exit) ---------
+UAN_RE = re.compile(r"^\d{12}$")
+ESIC_IP_RE = re.compile(r"^\d{10,17}$")
+PF_MEMBER_RE = re.compile(r"^[A-Z0-9/-]{3,30}$")
+
+PF_APPLICABLE = ("Yes", "No", "Pending Verification")
+ESIC_APPLICABLE = ("Yes", "No", "Pending Verification")
+PREVIOUS_PF_MEMBERSHIP = ("Yes", "No", "Unknown")
+ESIC_REGISTRATION_STATUS = ("Not Registered", "Pending", "Registered", "Inactive")
+VERIFICATION_STATUS = ("Pending", "Verified", "Rejected")
+
+# All columns owned by Advanced Edit. Non-admins may not set any of them.
+ADVANCED_FIELDS = (
+    "pf_applicable", "uan", "pf_member_id", "pf_joining_date", "pf_exit_date",
+    "previous_pf_membership", "esic_applicable", "esic_ip_number",
+    "esic_joining_date", "esic_exit_date", "esic_registration_status",
+    "verification_status", "verified_by", "verification_date", "remarks",
+    "supporting_document_ref", "job_leave_date",
+)
+# Optional advanced dates that a PATCH may clear by sending an explicit null.
+CLEARABLE_DATE_FIELDS = (
+    "pf_joining_date", "pf_exit_date", "esic_joining_date", "esic_exit_date",
+    "verification_date", "job_leave_date",
+)
+
+_CHOICE_FIELDS = (
+    ("pf_applicable", PF_APPLICABLE, "PF Applicable"),
+    ("esic_applicable", ESIC_APPLICABLE, "ESIC Applicable"),
+    ("previous_pf_membership", PREVIOUS_PF_MEMBERSHIP, "Previous PF Membership"),
+    ("esic_registration_status", ESIC_REGISTRATION_STATUS, "ESIC Registration Status"),
+    ("verification_status", VERIFICATION_STATUS, "Verification Status"),
+)
+
+
+def _normalize_advanced(data: dict) -> None:
+    if data.get("uan"):
+        data["uan"] = re.sub(r"[\s-]", "", data["uan"])
+    if data.get("esic_ip_number"):
+        data["esic_ip_number"] = re.sub(r"[\s-]", "", data["esic_ip_number"])
+    if data.get("pf_member_id"):
+        data["pf_member_id"] = re.sub(r"\s", "", data["pf_member_id"]).upper()
+
+
+def _advanced_errors(data: dict) -> list[str]:
+    """Generic format/choice errors for Advanced Edit fields (never echo the
+    submitted value). Empty/blank values are optional and skipped."""
+    errs: list[str] = []
+    uan = data.get("uan")
+    if uan and not UAN_RE.match(uan):
+        errs.append("Invalid UAN format (12 digits)")
+    esic = data.get("esic_ip_number")
+    if esic and not ESIC_IP_RE.match(esic):
+        errs.append("Invalid ESIC IP Number format (10-17 digits)")
+    member = data.get("pf_member_id")
+    if member and not PF_MEMBER_RE.match(member):
+        errs.append("Invalid PF Member ID format")
+    for field, allowed, label in _CHOICE_FIELDS:
+        value = data.get(field)
+        if value and value not in allowed:
+            errs.append(f"Invalid {label} value")
+    return errs
+
+
+def _advanced_date_errors(vals: dict) -> list[str]:
+    """Reject logically inconsistent date combinations across PF, ESIC and the
+    employment record."""
+    errs: list[str] = []
+    if vals.get("pf_joining_date") and vals.get("pf_exit_date") \
+            and vals["pf_exit_date"] < vals["pf_joining_date"]:
+        errs.append("PF Exit Date cannot be before PF Joining Date")
+    if vals.get("esic_joining_date") and vals.get("esic_exit_date") \
+            and vals["esic_exit_date"] < vals["esic_joining_date"]:
+        errs.append("ESIC Exit Date cannot be before ESIC Joining Date")
+    if vals.get("joining_date") and vals.get("job_leave_date") \
+            and vals["job_leave_date"] < vals["joining_date"]:
+        errs.append("Job Leave Date cannot be before Joining Date")
+    return errs
+
+
+def _validate_advanced(data: dict, current=None) -> None:
+    errs = _advanced_errors(data)
+    vals: dict = {}
+    if current is not None:
+        vals = {f: getattr(current, f, None) for f in ADVANCED_FIELDS}
+        vals["joining_date"] = getattr(current, "joining_date", None)
+    vals.update({k: v for k, v in data.items() if k in ADVANCED_FIELDS})
+    if data.get("joining_date"):
+        vals["joining_date"] = data["joining_date"]
+    errs.extend(_advanced_date_errors(vals))
+    if errs:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, errs[0])
 
 
 def _normalize_sensitive(data: dict) -> None:
@@ -592,10 +685,14 @@ def create_employee(body: EmployeeCreate, db: Annotated[Session, Depends(get_db)
     data = body.model_dump()
     if user.role == UserRole.admin:
         _normalize_sensitive(data)
+        _normalize_advanced(data)
         _validate_sensitive(data)
+        _validate_advanced(data)
     else:
         for field in SENSITIVE_FIELDS:
             data[field] = ""
+        for field in ADVANCED_FIELDS:
+            data.pop(field, None)
     emp = Employee(**data)
     db.add(emp)
     db.commit()
@@ -641,14 +738,21 @@ def update_employee(employee_id: int, body: EmployeeUpdate,
         raise HTTPException(status.HTTP_409_CONFLICT, "Employee ID already exists")
     if user.role == UserRole.admin:
         _normalize_sensitive(data)
+        _normalize_advanced(data)
         _validate_sensitive(data)
+        _validate_advanced(data, current=emp)
     else:
-        # Non-admins cannot read or modify sensitive fields.
-        for field in SENSITIVE_FIELDS:
+        # Non-admins cannot read or modify sensitive or Advanced Edit fields.
+        for field in (*SENSITIVE_FIELDS, *ADVANCED_FIELDS):
             data.pop(field, None)
     for key, value in data.items():
-        if value is not None and hasattr(emp, key):
-            setattr(emp, key, value)
+        if not hasattr(emp, key):
+            continue
+        # Explicit nulls only clear the optional Advanced Edit dates; all other
+        # fields keep the existing "ignore null" PATCH behaviour.
+        if value is None and key not in CLEARABLE_DATE_FIELDS:
+            continue
+        setattr(emp, key, value)
     db.commit()
     db.refresh(emp)
     write_audit(db, user, "UPDATE", "employees", emp.id, f"Updated employee {emp.name}")
