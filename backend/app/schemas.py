@@ -4,12 +4,12 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from .models import (
     DispatchStatus, EmployeeStatus, MovementType, OrderStatus, OrderType, PlanType,
-    ProductCategory, ProductionStatus, PurchaseStatus, QuotationStatus, QuotationType,
-    UserRole, normalize_quotation_company,
+    PRNLineMode, PRNStatus, ProductCategory, ProductionStatus, PurchaseStatus,
+    QuotationStatus, QuotationType, UserRole, normalize_quotation_company,
 )
 
 
@@ -304,6 +304,7 @@ class PurchaseOrderLineIn(BaseModel):
     uom: str = ""
     tax_percent: Optional[float] = None
     discount_percent: Optional[float] = None
+    prn_line_id: Optional[int] = None
 
 
 class PurchaseOrderCreate(BaseModel):
@@ -318,6 +319,8 @@ class PurchaseOrderCreate(BaseModel):
     status: PurchaseStatus = PurchaseStatus.ordered
     notes: str = ""
     lines: list[PurchaseOrderLineIn] = []
+    prn_id: Optional[int] = None
+    idempotency_key: str = Field(default="", max_length=80)
 
 
 class PurchaseOrderUpdate(BaseModel):
@@ -1315,3 +1318,79 @@ class QuotationEmailHistoryOut(ORMModel):
     status: str
     error_message: str
     sent_at: datetime
+
+
+# ------------------------- PRN (Purchase Requisition Note) -------------------------
+class PRNLineIn(BaseModel):
+    """One material requirement row. Manual (unmatched) rows carry no stock —
+    the router stores NULL, never 0, for stock on a manual entry."""
+
+    id: Optional[int] = None
+    entry_mode: PRNLineMode = PRNLineMode.manual
+    material_id: Optional[int] = None
+    material_code: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=2000)
+    specification: str = Field(default="", max_length=2000)
+    quantity: float = 0
+    uom: str = Field(default="", max_length=30)
+    remarks: str = Field(default="", max_length=2000)
+
+    @field_validator("description")
+    @classmethod
+    def _description_required(cls, v: str) -> str:
+        if not (v or "").strip():
+            raise ValueError("Material description is required")
+        return v.strip()
+
+    @field_validator("quantity")
+    @classmethod
+    def _quantity_positive(cls, v: float) -> float:
+        if v is None or float(v) <= 0:
+            raise ValueError("Required quantity must be greater than zero")
+        return float(v)
+
+    @model_validator(mode="after")
+    def _existing_needs_material(self):
+        if self.entry_mode == PRNLineMode.existing and not self.material_id:
+            raise ValueError("An existing material selection is required for Existing mode")
+        return self
+
+
+class PRNCreate(BaseModel):
+    prn_date: Optional[date] = None
+    department: str = Field(default="", max_length=120)
+    department_head: str = Field(default="", max_length=160)
+    company_name: str = Field(default="", max_length=160)
+    required_by_date: Optional[date] = None
+    priority: str = Field(default="Normal", max_length=20)
+    requirement_type: str = Field(default="Production", max_length=40)
+    purpose: str = Field(default="", max_length=4000)
+    production_reference: str = Field(default="", max_length=120)
+    checked_by_name: str = Field(default="", max_length=160)
+    purchase_remarks: str = Field(default="", max_length=4000)
+    lines: list[PRNLineIn] = Field(default_factory=list)
+
+
+class PRNUpdate(BaseModel):
+    prn_date: Optional[date] = None
+    department: Optional[str] = Field(default=None, max_length=120)
+    department_head: Optional[str] = Field(default=None, max_length=160)
+    company_name: Optional[str] = Field(default=None, max_length=160)
+    required_by_date: Optional[date] = None
+    priority: Optional[str] = Field(default=None, max_length=20)
+    requirement_type: Optional[str] = Field(default=None, max_length=40)
+    purpose: Optional[str] = Field(default=None, max_length=4000)
+    production_reference: Optional[str] = Field(default=None, max_length=120)
+    checked_by_name: Optional[str] = Field(default=None, max_length=160)
+    purchase_remarks: Optional[str] = Field(default=None, max_length=4000)
+    lines: Optional[list[PRNLineIn]] = None
+
+
+class PRNRejectIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class PRNFulfillmentIn(BaseModel):
+    fulfillment_status: Literal["Pending", "Partially Fulfilled", "Completed"]
+    purchase_reference: str = Field(default="", max_length=120)
+    purchase_remarks: str = Field(default="", max_length=4000)

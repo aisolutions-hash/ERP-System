@@ -17,7 +17,7 @@ from .routers import (
     purchases, inventory, production, orders, dispatch, plans, dashboard, reports,
     requirements, salespersons, local_orders, bom, alerts,
     material_requirements, fulfilment, stock_flow, quotations, packaging_lists,
-    employees,
+    employees, prn,
 )
 
 # Schema additions create_all cannot apply to pre-existing tables (idempotent ALTER).
@@ -73,6 +73,13 @@ _COLUMN_MIGRATIONS = [
     ("employees", "remarks", "VARCHAR(500) DEFAULT ''"),
     ("employees", "supporting_document_ref", "VARCHAR(255) DEFAULT ''"),
     ("employees", "job_leave_date", "DATE"),
+    ("prns", "company_name", "VARCHAR(160) DEFAULT ''"),
+    ("prns", "department_head", "VARCHAR(160) DEFAULT ''"),
+    ("prns", "checked_by_name", "VARCHAR(160) DEFAULT ''"),
+    ("prns", "purchase_remarks", "TEXT DEFAULT ''"),
+    ("purchase_orders", "prn_id", "INTEGER"),
+    ("purchase_orders", "idempotency_key", "VARCHAR(80)"),
+    ("purchase_order_lines", "prn_line_id", "INTEGER"),
 ]
 
 # Internal stock locations seeded as Plants (Main Store = plant_id NULL).
@@ -94,6 +101,27 @@ def _ensure_columns() -> None:
             "         THEN ROUND(CAST(COALESCE(inward_qty, 0) / COALESCE(schedule_qty, 0) AS NUMERIC), 4) ELSE 0 END "
             "WHERE schedule_qty IS NOT NULL AND balance_qty IS NULL"
         ))
+
+
+def _ensure_prn_po_indexes() -> None:
+    """Additive indexes for the PRN↔PO link (idempotent).
+
+    The idempotency-key unique index is PARTIAL (WHERE NOT NULL) so the many
+    NULL keys of normal POs never collide. Postgres-only; SQLite (tests) builds
+    no index beyond the model's plain ones.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_purchase_orders_prn_id "
+            "ON purchase_orders (prn_id)"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_purchase_order_lines_prn_line_id "
+            "ON purchase_order_lines (prn_line_id)"))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_purchase_orders_idempotency_key "
+            "ON purchase_orders (idempotency_key) WHERE idempotency_key IS NOT NULL"))
 
 
 def _ensure_order_status_enum() -> None:
@@ -297,6 +325,11 @@ def on_startup():
         log.info("Column migrations applied.")
     except Exception as exc:
         log.error("column migration failed (recoverable): %s", exc)
+    # Additive indexes + idempotency unique index for the PRN↔PO link.
+    try:
+        _ensure_prn_po_indexes()
+    except Exception as exc:
+        log.error("PRN/PO index migration failed (recoverable): %s", exc)
     # Manual 'Production Completed' Local Order status (existing Postgres enum).
     try:
         _ensure_order_status_enum()
@@ -386,6 +419,7 @@ app.include_router(stock_flow.transfer_router)
 app.include_router(stock_flow.dispatch_router)
 app.include_router(packaging_lists.router)
 app.include_router(employees.router)
+app.include_router(prn.router)
 
 
 # Serve the built React app in production mode (frontend/dist mounted next to backend).

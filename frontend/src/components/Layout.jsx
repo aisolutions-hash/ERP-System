@@ -5,7 +5,7 @@ import {
   Truck, Users, Package, FileDown, ShieldCheck, LogOut, ListChecks,
   AlertTriangle, Store, BellRing, ClipboardList, GitBranch, LayoutGrid,
   ChevronsLeft, ChevronsRight, Menu, X, Layers, ArrowLeftRight, FileSpreadsheet, PackagePlus,
-  FileText, Briefcase,
+  FileText, Briefcase, ClipboardCheck,
 } from 'lucide-react'
 import api from '../lib/api'
 import { useAuth } from '../context/AuthContext'
@@ -45,6 +45,7 @@ const SECTIONS = [
     label: 'Procurement',
     items: [
       { to: '/purchases', label: 'Purchases', icon: ShoppingCart },
+      { to: '/prn', label: 'PRN', icon: ClipboardCheck },
       { to: '/requirements', label: 'Requirements', icon: AlertTriangle },
       { to: '/material-requirements', label: 'Material Req', icon: ClipboardList },
       { to: '/fulfilment', label: 'Fulfilment', icon: LayoutGrid },
@@ -86,6 +87,7 @@ const TITLE_MAP = {
   '/inventory': { title: 'Inventory', sub: 'Stock levels & status' },
   '/stock-movements': { title: 'Stock Movements', sub: 'Every stock transaction' },
   '/purchases': { title: 'Purchases', sub: 'Purchase orders' },
+  '/prn': { title: 'Purchase Requisition Note', sub: 'Material purchase requirements' },
   '/requirements': { title: 'Requirements', sub: 'Requirement decisions' },
   '/material-requirements': { title: 'Material Requirements', sub: 'BOM-driven shortages' },
   '/fulfilment': { title: 'Fulfilment', sub: 'Stock → decision per line' },
@@ -105,11 +107,13 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(() => window.innerWidth >= 1024 && false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [unreadAlerts, setUnreadAlerts] = useState(0)
+  const [pendingPrn, setPendingPrn] = useState(0)
   const [period, setPeriod] = useState(null)
 
   useEffect(() => {
     const fetchMeta = () => {
       api.get('/alerts/count').then((r) => setUnreadAlerts(r.data.unread || 0)).catch(() => {})
+      api.get('/prn/purchase-requests/count').then((r) => setPendingPrn(r.data.requests || 0)).catch(() => {})
     }
     const fetchPeriod = () => {
       api.get('/dashboard/summary').then((r) => setPeriod(r.data.report_date || null)).catch(() => {})
@@ -153,6 +157,12 @@ export default function Layout() {
               )}
               {item.to === '/alerts' && collapsed && unreadAlerts > 0 && (
                 <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-red-500" />
+              )}
+              {item.to === '/purchases' && !collapsed && pendingPrn > 0 && (
+                <span className="ml-auto bg-amber-500 text-white text-[10px] font-bold rounded-full h-4 min-w-4 px-1 flex items-center justify-center">{pendingPrn}</span>
+              )}
+              {item.to === '/purchases' && collapsed && pendingPrn > 0 && (
+                <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-amber-500" />
               )}
             </NavLink>
           ))}
@@ -253,6 +263,9 @@ export default function Layout() {
                       <span className="flex-1 text-left truncate">{item.label}</span>
                       {item.to === '/alerts' && unreadAlerts > 0 && (
                         <span className="bg-red-500 text-white text-[10px] font-bold rounded-full h-4 min-w-4 px-1 flex items-center justify-center">{unreadAlerts}</span>
+                      )}
+                      {item.to === '/purchases' && pendingPrn > 0 && (
+                        <span className="bg-amber-500 text-white text-[10px] font-bold rounded-full h-4 min-w-4 px-1 flex items-center justify-center">{pendingPrn}</span>
                       )}
                     </NavLink>
                   ))}

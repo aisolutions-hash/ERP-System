@@ -3,13 +3,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..auth import CurrentUser, ManagerOrAdmin
 from ..crud import apply_updates, get_or_404, write_audit
 from ..database import get_db
 from ..models import (
-    MovementType, Product, ProductCategory,
+    MovementType, Product, ProductCategory, PRN,
     PurchaseOrder, PurchaseOrderLine, PurchaseStatus, Supplier,
     ImportBatch,
 )
@@ -18,6 +19,7 @@ from ..services.import_common import (
     build_column_map, cell_num, is_blank_row, normalize_header, parse_date_value,
     read_table, row_to_dict,
 )
+from ..services.prn_fulfilment import affected_prn_ids, sync_prn_fulfilment
 from ..services.reorder_alerts import refresh_reorder_alert
 from ..services.rm_service import add_rm_inward, match_raw_material
 from ..services.stock_service import apply_movement, resolve_or_create_product, reverse_and_remove_ref
@@ -29,6 +31,12 @@ from datetime import date
 import json
 
 router = APIRouter(prefix="/purchases", tags=["purchases"])
+
+
+def _prn_number(db: Session, prn_id: int | None) -> str:
+    if not prn_id:
+        return ""
+    return db.scalar(select(PRN.prn_number).where(PRN.id == prn_id)) or ""
 
 
 def _serialize_po(db: Session, po: PurchaseOrder) -> dict:
@@ -44,6 +52,7 @@ def _serialize_po(db: Session, po: PurchaseOrder) -> dict:
             "uom": ln.uom or (ln.product.uom if ln.product else ""),
             "tax_percent": float(ln.tax_percent) if ln.tax_percent is not None else None,
             "discount_percent": float(ln.discount_percent) if ln.discount_percent is not None else None,
+            "prn_line_id": ln.prn_line_id,
             "product": {"id": ln.product.id, "model": ln.product.model, "item_code": ln.product.item_code,
                         "category": ln.product.category.value} if ln.product else None,
         })
@@ -53,6 +62,8 @@ def _serialize_po(db: Session, po: PurchaseOrder) -> dict:
         "order_date": po.order_date, "status": po.status.value,
         "total_amount": float(po.total_amount), "notes": po.notes,
         "created_at": po.created_at,
+        "prn_id": po.prn_id,
+        "prn_number": _prn_number(db, po.prn_id),
         "supplier": {"id": supplier.id, "name": supplier.name, "gstin": supplier.gstin or "",
                      "address": supplier.address or "", "phone": supplier.phone or "",
                      "email": supplier.email or ""}
@@ -204,7 +215,17 @@ def list_purchases(
 
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_purchase(body: PurchaseOrderCreate, db: Annotated[Session, Depends(get_db)],
-                    user: ManagerOrAdmin):
+                    user: ManagerOrAdmin, response: Response):
+    # Idempotent create: a replayed request (double-click / retry after a lost
+    # response) with the same key returns the PO the first attempt created.
+    key = (body.idempotency_key or "").strip()
+    if key:
+        existing = db.scalars(
+            select(PurchaseOrder).where(PurchaseOrder.idempotency_key == key)).first()
+        if existing is not None:
+            response.status_code = status.HTTP_200_OK
+            return _serialize_po(db, existing)
+
     supplier = None
     if body.supplier_id is not None:
         supplier = db.get(Supplier, body.supplier_id)
@@ -224,6 +245,7 @@ def create_purchase(body: PurchaseOrderCreate, db: Annotated[Session, Depends(ge
         supplier_id=supplier.id if supplier else None,
         supplier_name=supplier.name if supplier else (body.supplier_name or "").strip(),
         order_date=body.order_date, notes=body.notes,
+        prn_id=body.prn_id, idempotency_key=key or None,
     )
     lines = [PurchaseOrderLine(**ln.model_dump()) for ln in body.lines]
     for ln in lines:
@@ -231,9 +253,30 @@ def create_purchase(body: PurchaseOrderCreate, db: Annotated[Session, Depends(ge
     po.lines = lines
     _recalc(po, lines)
     db.add(po)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Concurrent duplicate of the same idempotency key — return that PO.
+        db.rollback()
+        existing = db.scalars(
+            select(PurchaseOrder).where(PurchaseOrder.idempotency_key == key)).first() if key else None
+        if existing is not None:
+            response.status_code = status.HTTP_200_OK
+            return _serialize_po(db, existing)
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "Could not create purchase order; please retry")
     db.refresh(po)
-    write_audit(db, user, "CREATE", "purchase_orders", po.id, f"Created PO {po.po_number}")
+    prn_no = _prn_number(db, po.prn_id)
+    write_audit(db, user, "CREATE", "purchase_orders", po.id,
+                f"Created PO {po.po_number}" + (f" from PRN {prn_no}" if prn_no else ""))
+    # Ordering a PRN does not yet fulfil it (no receipt), but the linked PO is
+    # now visible to the PRN's purchasing progress; sync keeps status authoritative.
+    transitions = sync_prn_fulfilment(db, {po.prn_id})
+    if transitions:
+        db.commit()
+        for t in transitions:
+            write_audit(db, user, "PO_LINKED", "prns", t["prn_id"],
+                        f"PO {po.po_number} created ({t['from']} -> {t['to']})")
     return _serialize_po(db, po)
 
 
@@ -273,7 +316,9 @@ def update_purchase(po_id: int, body: PurchaseOrderUpdate, db: Annotated[Session
 
     apply_updates(po, body, exclude={"lines", "po_number", "supplier_id", "supplier_name",
                                      "supplier_gstin", "supplier_address", "supplier_phone", "supplier_email"})
+    affected = {po.prn_id} if po.prn_id else set()
     if body.lines is not None:
+        affected |= affected_prn_ids(db, list(po.lines))
         # Reverse every previously received quantity before replacing the
         # line set, so editing a received PO never leaves stale stock.
         reverse_and_remove_ref(db, "purchase_order", po.id)
@@ -294,9 +339,16 @@ def update_purchase(po_id: int, body: PurchaseOrderUpdate, db: Annotated[Session
                                    remarks=f"Receipt against PO {po.po_number}")
                     refresh_reorder_alert(db, product.id)
         _recalc(po, lines)
+        affected |= affected_prn_ids(db, lines)
     db.commit()
     db.refresh(po)
     write_audit(db, user, "UPDATE", "purchase_orders", po.id, f"Updated PO {po.po_number}")
+    transitions = sync_prn_fulfilment(db, affected)
+    if transitions:
+        db.commit()
+        for t in transitions:
+            write_audit(db, user, "RECEIPT", "prns", t["prn_id"],
+                        f"PO {po.po_number} updated ({t['from']} -> {t['to']})")
     result = _serialize_po(db, po)
     _attach_stock_warnings(result, po.lines)
     return result
@@ -338,9 +390,17 @@ def receive_purchase(po_id: int, line_id: int, received_qty: float,
             if product.category == ProductCategory.raw_material:
                 add_rm_inward(db, product.id, delta)
     _recalc(po, po.lines)
+    affected = affected_prn_ids(db, [line]) | ({po.prn_id} if po.prn_id else set())
     db.commit()
     db.refresh(po)
     write_audit(db, user, "RECEIVE", "purchase_orders", po.id, f"Received {received_qty} for line {line_id}")
+    # Push the new receipt onto any PRN this line fulfils.
+    transitions = sync_prn_fulfilment(db, affected)
+    if transitions:
+        db.commit()
+        for t in transitions:
+            write_audit(db, user, "RECEIPT", "prns", t["prn_id"],
+                        f"Material received against PO {po.po_number} ({t['from']} -> {t['to']})")
     sync_purchase_shortages(db)
     result = _serialize_po(db, po)
     _attach_stock_warnings(result, po.lines)
@@ -351,10 +411,19 @@ def receive_purchase(po_id: int, line_id: int, received_qty: float,
 def delete_purchase(po_id: int, db: Annotated[Session, Depends(get_db)],
                     user: ManagerOrAdmin):
     po = get_or_404(db, PurchaseOrder, po_id)
+    affected = affected_prn_ids(db, list(po.lines)) | ({po.prn_id} if po.prn_id else set())
+    po_number = po.po_number
     reverse_and_remove_ref(db, "purchase_order", po.id)
     db.delete(po)
     db.commit()
-    write_audit(db, user, "DELETE", "purchase_orders", po_id, f"Deleted PO {po.po_number}")
+    write_audit(db, user, "DELETE", "purchase_orders", po_id, f"Deleted PO {po_number}")
+    # Reverse the fulfilment effect of the removed PO on any linked PRN.
+    transitions = sync_prn_fulfilment(db, affected)
+    if transitions:
+        db.commit()
+        for t in transitions:
+            write_audit(db, user, "RECEIPT", "prns", t["prn_id"],
+                        f"PO {po_number} deleted ({t['from']} -> {t['to']})")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

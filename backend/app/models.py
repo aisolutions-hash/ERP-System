@@ -389,6 +389,13 @@ class PurchaseOrder(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
     source_excel: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Link to the PRN this PO fulfils (nullable; one PRN may map to several POs).
+    # Plain integer reference (no FK) so the column is purely additive on
+    # existing databases; the PRN remains authoritative for its own lifecycle.
+    prn_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # Client-supplied dedupe token: a replayed create request returns the PO
+    # created by the first attempt instead of inserting a duplicate.
+    idempotency_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
     lines: Mapped[list[PurchaseOrderLine]] = relationship(back_populates="po", cascade="all, delete-orphan")
     supplier: Mapped[Supplier | None] = relationship()
@@ -409,6 +416,8 @@ class PurchaseOrderLine(Base):
     uom: Mapped[str] = mapped_column(String(30), default="")
     tax_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     discount_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The PRN line this PO line fulfils (nullable; additive, no FK).
+    prn_line_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     po: Mapped[PurchaseOrder] = relationship(back_populates="lines")
     product: Mapped[Product | None] = relationship()
@@ -1091,3 +1100,96 @@ class QuotationLine(Base):
 
     quotation: Mapped[Quotation] = relationship(back_populates="lines")
     product: Mapped[Product | None] = relationship()
+
+
+# ---------------------------------------------------------------------------
+# PRN — Purchase Requisition Note (additive, isolated)
+# ---------------------------------------------------------------------------
+class PRNStatus(str, enum.Enum):
+    draft = "Draft"
+    pending_approval = "Pending Approval"
+    approved = "Approved"
+    rejected = "Rejected"
+    sent_to_purchase = "Sent to Purchase"
+    partially_fulfilled = "Partially Fulfilled"
+    completed = "Completed"
+    cancelled = "Cancelled"
+
+
+class PRNLineMode(str, enum.Enum):
+    existing = "EXISTING"
+    manual = "MANUAL"
+
+
+class PRN(Base):
+    """Purchase Requisition Note header. A PRN is a request document only — it
+    never creates purchase orders, goods receipts or stock movements on its own.
+    Stock fields on the lines are a point-in-time snapshot for the requester."""
+
+    __tablename__ = "prns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    prn_number: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    prn_date: Mapped[date] = mapped_column(Date, default=date.today, index=True)
+    department: Mapped[str] = mapped_column(String(120), default="", index=True)
+    requested_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    requested_by_name: Mapped[str] = mapped_column(String(160), default="")
+    required_by_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    priority: Mapped[str] = mapped_column(String(20), default="Normal", index=True)
+    requirement_type: Mapped[str] = mapped_column(String(40), default="Production", index=True)
+    purpose: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[PRNStatus] = mapped_column(
+        Enum(PRNStatus), default=PRNStatus.draft, index=True
+    )
+    fulfillment_status: Mapped[str] = mapped_column(String(30), default="Pending", index=True)
+    rejection_reason: Mapped[str] = mapped_column(Text, default="")
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_by_name: Mapped[str] = mapped_column(String(160), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Optional business reference to an external purchase action (never auto-created).
+    purchase_reference: Mapped[str] = mapped_column(String(120), default="")
+    production_reference: Mapped[str] = mapped_column(String(120), default="")
+    # Printed-form header / sign-off fields (requisition sheet layout).
+    company_name: Mapped[str] = mapped_column(String(160), default="")
+    department_head: Mapped[str] = mapped_column(String(160), default="")
+    checked_by_name: Mapped[str] = mapped_column(String(160), default="")
+    purchase_remarks: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    lines: Mapped[list[PRNLine]] = relationship(
+        back_populates="prn", cascade="all, delete-orphan", order_by="PRNLine.id"
+    )
+    requested_by: Mapped[User | None] = relationship(foreign_keys=[requested_by_id])
+    approved_by: Mapped[User | None] = relationship(foreign_keys=[approved_by_id])
+
+
+class PRNLine(Base):
+    """One requested material line on a PRN. A manual line (no material_id) is a
+    New Material pending master review — its stock is UNKNOWN (NULL), never 0."""
+
+    __tablename__ = "prn_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    prn_id: Mapped[int] = mapped_column(ForeignKey("prns.id"), index=True)
+    entry_mode: Mapped[PRNLineMode] = mapped_column(
+        Enum(PRNLineMode), default=PRNLineMode.manual
+    )
+    material_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
+    material_code: Mapped[str] = mapped_column(String(120), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    specification: Mapped[str] = mapped_column(Text, default="")
+    quantity: Mapped[float] = mapped_column(Float, default=0)
+    uom: Mapped[str] = mapped_column(String(30), default="")
+    available_stock: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reserved_stock: Mapped[float | None] = mapped_column(Float, nullable=True)
+    incoming_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    suggested_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    remarks: Mapped[str] = mapped_column(Text, default="")
+    attachment_name: Mapped[str] = mapped_column(String(255), default="")
+    attachment_path: Mapped[str] = mapped_column(String(500), default="")
+    is_new_material: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    prn: Mapped[PRN] = relationship(back_populates="lines")
+    material: Mapped[Product | None] = relationship()

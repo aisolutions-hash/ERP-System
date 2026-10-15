@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Plus, Search, Download, Pencil, Trash2, RefreshCw, PackageOpen, FilePlus2, DollarSign, Layers, CheckCircle2, Share2, Printer, Image, Loader2 } from 'lucide-react'
 import html2canvas from 'html2canvas'
 import api, { downloadFile } from '../lib/api'
-import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard, SearchSelect } from '../components/ui'
+import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard, SearchSelect, PageTabs } from '../components/ui'
 import Table from '../components/Table'
+import PrnPurchaseRequests from '../components/PrnPurchaseRequests'
 import { fmtNum } from '../lib/format'
 
 const statusCls = {
@@ -15,7 +16,12 @@ const statusCls = {
 }
 const statuses = ['Draft', 'Ordered', 'Partially Received', 'Received', 'Cancelled']
 
+const makeKey = () => (typeof crypto !== 'undefined' && crypto.randomUUID
+  ? crypto.randomUUID()
+  : `${Date.now()}-${Math.random().toString(36).slice(2)}`)
+
 export default function Purchases() {
+  const [tab, setTab] = useState('po')
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -124,9 +130,27 @@ export default function Purchases() {
     setForm({
       po_number: '', order_date: new Date().toISOString().slice(0, 10), status: 'Ordered', notes: '',
       supplier_id: '', supplier_name: '', supplier_gstin: '', supplier_address: '', supplier_phone: '', supplier_email: '',
+      prn_id: null, idempotency_key: makeKey(),
       lines: [{ product_id: '', description: '', item_code: '', quantity: '', received_qty: 0, rate: '', amount: '', uom: '', tax_percent: null, discount_percent: null }],
     })
     setError(null); setShowForm(true)
+  }
+
+  // Create a PO from a PRN request: prefill the existing New PO form; the PO is
+  // created through the normal Purchases API (with prn_id + idempotency_key).
+  const openNewFromPrn = (prn) => {
+    setForm({
+      po_number: '', order_date: new Date().toISOString().slice(0, 10), status: 'Ordered',
+      notes: `Against PRN ${prn.prn_number}`,
+      supplier_id: '', supplier_name: '', supplier_gstin: '', supplier_address: '', supplier_phone: '', supplier_email: '',
+      prn_id: prn.prn_id, idempotency_key: makeKey(),
+      lines: (prn.lines || []).map((l) => ({
+        prn_line_id: l.prn_line_id, product_id: l.product_id || '', description: l.description || '',
+        item_code: l.item_code || '', quantity: l.quantity ?? '', received_qty: 0,
+        rate: '', amount: '', uom: l.uom || '', tax_percent: null, discount_percent: null,
+      })),
+    })
+    setError(null); setTab('po'); setShowForm(true)
   }
 
   const openEdit = (po) => {
@@ -138,7 +162,8 @@ export default function Purchases() {
       supplier_phone: po.supplier?.phone || '',
       supplier_email: po.supplier?.email || '',
       order_date: po.order_date, status: po.status, notes: po.notes || '',
-      lines: (po.lines || []).map((l) => ({ id: l.id, product_id: l.product_id ?? '', description: l.description || '', item_code: l.item_code || '', quantity: l.quantity, received_qty: l.received_qty || 0, rate: l.rate ?? '', amount: l.amount ?? '', uom: l.uom || '', tax_percent: l.tax_percent ?? null, discount_percent: l.discount_percent ?? null })),
+      prn_id: po.prn_id || null,
+      lines: (po.lines || []).map((l) => ({ id: l.id, prn_line_id: l.prn_line_id || null, product_id: l.product_id ?? '', description: l.description || '', item_code: l.item_code || '', quantity: l.quantity, received_qty: l.received_qty || 0, rate: l.rate ?? '', amount: l.amount ?? '', uom: l.uom || '', tax_percent: l.tax_percent ?? null, discount_percent: l.discount_percent ?? null })),
     })
     setError(null); setShowForm(true)
   }
@@ -189,6 +214,8 @@ export default function Purchases() {
       supplier_phone: (form.supplier_phone || '').trim(),
       supplier_email: (form.supplier_email || '').trim(),
       order_date: form.order_date, status: form.status || 'Ordered', notes: form.notes || '',
+      // PRN link + dedupe token apply only when creating (required by the queue flow).
+      ...(form.id ? {} : { prn_id: form.prn_id || null, idempotency_key: form.idempotency_key || '' }),
       lines: form.lines.filter((l) => l.product_id || (l.description || '').trim()).map((l) => ({
         product_id: l.product_id ? Number(l.product_id) : null,
         description: l.description || '',
@@ -199,6 +226,7 @@ export default function Purchases() {
         uom: l.uom || '',
         tax_percent: l.tax_percent ?? null,
         discount_percent: l.discount_percent ?? null,
+        prn_line_id: l.prn_line_id || null,
       })),
     }
     if (!payload.po_number) { setError('PO number is required'); return }
@@ -404,15 +432,28 @@ export default function Purchases() {
   return (
     <div className="animate-fade-in-up">
       <PageHeader title="Purchases" subtitle="Supplier purchase orders • Requirement → PO → Ordered → Partially Received → Received → Stock"
-        actions={
+        actions={tab === 'po' ? (
           <>
             <button onClick={() => downloadFile('/reports/purchases/csv', 'purchases.csv')} className="btn btn-secondary"><Download size={15} /> CSV</button>
             <button onClick={() => load()} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>
             <button onClick={() => { setShowImport(true); setImportResult(null); setImportFile(null) }} className="btn btn-secondary text-sm">Import</button>
             <button onClick={openNew} className="btn btn-primary"><Plus size={15} /> New PO</button>
           </>
-        } />
+        ) : null} />
 
+      <PageTabs
+        tabs={[
+          { key: 'po', label: 'Purchase Orders', icon: <FilePlus2 size={14} />, count: total },
+          { key: 'prn-requests', label: 'PRN Requests' },
+        ]}
+        active={tab}
+        onChange={setTab}
+      />
+
+      {tab === 'prn-requests' ? (
+        <PrnPurchaseRequests onCreatePurchaseOrder={openNewFromPrn} />
+      ) : (
+      <>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         <StatCard label="Purchase Orders" value={total} icon={FilePlus2} iconClass="bg-amber-50 text-amber-600" />
         <StatCard label="Received" value={received} icon={CheckCircle2} iconClass="bg-green-50 text-green-600" valueClass="text-green-600" />
@@ -449,6 +490,8 @@ export default function Purchases() {
           </>
         )}
       </Card>
+      </>
+      )}
 
       {detail && (
         <Modal open title={detail && !detail.loading ? `PO ${detail.po_number}` : 'Loading…'} onClose={() => setDetail(null)} xwide
@@ -478,6 +521,7 @@ export default function Purchases() {
                 <div><span className="text-slate-500 block text-xs">Order Date</span><span className="font-medium">{detail.order_date}</span></div>
                 <div><span className="text-slate-500 block text-xs">Status</span><Badge className={statusCls[detail.status]}>{detail.status}</Badge></div>
                 <div><span className="text-slate-500 block text-xs">Total Amount</span><span className="font-medium">{fmtNum(detail.total_amount)}</span></div>
+                {detail.prn_number && <div><span className="text-slate-500 block text-xs">Source PRN</span><span className="font-medium font-mono">{detail.prn_number}</span></div>}
                 <div className="col-span-2 md:col-span-4"><span className="text-slate-500 block text-xs">Address</span><span className="font-medium">{detail.supplier?.address || '—'}</span></div>
                 {detail.notes && <div className="col-span-2 md:col-span-4"><span className="text-slate-500 block text-xs">Notes</span><span className="font-medium">{detail.notes}</span></div>}
                 {detail.warnings?.length > 0 && (
