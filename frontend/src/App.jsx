@@ -5,7 +5,7 @@ import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import RawMaterials from './pages/RawMaterials'
 import Purchases from './pages/Purchases'
-import PRN from './pages/PRN'
+import PurchaseRequisitions from './pages/PurchaseRequisitions'
 import Inventory from './pages/Inventory'
 import Production from './pages/Production'
 import Orders from './pages/Orders'
@@ -49,7 +49,7 @@ function App() {
             <Route index element={<Dashboard />} />
             <Route path="raw-materials" element={<RawMaterials />} />
             <Route path="purchases" element={<Purchases />} />
-            <Route path="prn" element={<PRN />} />
+            <Route path="prn" element={<PurchaseRequisitions />} />
             <Route path="inventory" element={<Inventory />} />
             <Route path="stock-movements" element={<StockMovements />} />
             <Route path="production" element={<Production />} />

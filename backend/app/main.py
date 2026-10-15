@@ -17,7 +17,7 @@ from .routers import (
     purchases, inventory, production, orders, dispatch, plans, dashboard, reports,
     requirements, salespersons, local_orders, bom, alerts,
     material_requirements, fulfilment, stock_flow, quotations, packaging_lists,
-    employees, prn,
+    employees, prns,
 )
 
 # Schema additions create_all cannot apply to pre-existing tables (idempotent ALTER).
@@ -419,7 +419,7 @@ app.include_router(stock_flow.transfer_router)
 app.include_router(stock_flow.dispatch_router)
 app.include_router(packaging_lists.router)
 app.include_router(employees.router)
-app.include_router(prn.router)
+app.include_router(prns.router)
 
 
 # Serve the built React app in production mode (frontend/dist mounted next to backend).
