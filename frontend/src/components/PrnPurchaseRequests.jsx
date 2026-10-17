@@ -188,7 +188,7 @@ function DetailBody({ detail }) {
                 <td className="font-mono text-xs">{l.material_code || '—'}</td>
                 <td className="font-medium">
                   {l.description}
-                  {l.is_new_material && <span className="block text-[10px] text-amber-600">New Material – Master Review Required</span>}
+                  {l.is_new_material && <span className="block text-[10px] text-amber-600">Manual Entry – Item Master Review Required</span>}
                 </td>
                 <td>{l.uom || '—'}</td>
                 <td>{fmtNum(l.quantity)}</td>

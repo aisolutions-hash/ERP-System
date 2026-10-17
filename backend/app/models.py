@@ -1176,6 +1176,10 @@ class PRNLine(Base):
         Enum(PRNLineMode), default=PRNLineMode.manual
     )
     material_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
+    # Inventory location the stock snapshot was read from. NULL = Main Store
+    # (the system default, plant_id NULL on Inventory). Read-only reference:
+    # a PRN never writes to Inventory.
+    plant_id: Mapped[int | None] = mapped_column(ForeignKey("plants.id"), nullable=True, index=True)
     material_code: Mapped[str] = mapped_column(String(120), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     specification: Mapped[str] = mapped_column(Text, default="")
@@ -1185,6 +1189,12 @@ class PRNLine(Base):
     reserved_stock: Mapped[float | None] = mapped_column(Float, nullable=True)
     incoming_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
     suggested_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # PRN-specific stock estimate entered by the requester. This is NEVER an
+    # inventory adjustment; the actual stock snapshot stays in available_stock.
+    # Who/when are kept for auditability of the override.
+    stock_override: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stock_overridden_by_name: Mapped[str] = mapped_column(String(160), default="")
+    stock_overridden_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     remarks: Mapped[str] = mapped_column(Text, default="")
     attachment_name: Mapped[str] = mapped_column(String(255), default="")
     attachment_path: Mapped[str] = mapped_column(String(500), default="")
@@ -1193,3 +1203,4 @@ class PRNLine(Base):
 
     prn: Mapped[PRN] = relationship(back_populates="lines")
     material: Mapped[Product | None] = relationship()
+    plant: Mapped[Plant | None] = relationship()

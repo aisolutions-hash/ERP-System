@@ -1328,12 +1328,23 @@ class PRNLineIn(BaseModel):
     id: Optional[int] = None
     entry_mode: PRNLineMode = PRNLineMode.manual
     material_id: Optional[int] = None
+    # Inventory location for the stock snapshot. None = Main Store (default).
+    plant_id: Optional[int] = None
     material_code: str = Field(default="", max_length=120)
     description: str = Field(default="", max_length=2000)
     specification: str = Field(default="", max_length=2000)
     quantity: float = 0
     uom: str = Field(default="", max_length=30)
     remarks: str = Field(default="", max_length=2000)
+    # Optional PRN-specific stock estimate (override). Never an inventory change.
+    stock_override: Optional[float] = None
+
+    @field_validator("stock_override")
+    @classmethod
+    def _override_non_negative(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and float(v) < 0:
+            raise ValueError("Stock override cannot be negative")
+        return v
 
     @field_validator("description")
     @classmethod
@@ -1361,6 +1372,8 @@ class PRNCreate(BaseModel):
     department: str = Field(default="", max_length=120)
     department_head: str = Field(default="", max_length=160)
     company_name: str = Field(default="", max_length=160)
+    # Manually entered requester name; falls back to the authenticated user.
+    requested_by_name: Optional[str] = Field(default=None, max_length=160)
     required_by_date: Optional[date] = None
     priority: str = Field(default="Normal", max_length=20)
     requirement_type: str = Field(default="Production", max_length=40)
@@ -1376,6 +1389,7 @@ class PRNUpdate(BaseModel):
     department: Optional[str] = Field(default=None, max_length=120)
     department_head: Optional[str] = Field(default=None, max_length=160)
     company_name: Optional[str] = Field(default=None, max_length=160)
+    requested_by_name: Optional[str] = Field(default=None, max_length=160)
     required_by_date: Optional[date] = None
     priority: Optional[str] = Field(default=None, max_length=20)
     requirement_type: Optional[str] = Field(default=None, max_length=40)

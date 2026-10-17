@@ -77,9 +77,13 @@ _COLUMN_MIGRATIONS = [
     ("prns", "department_head", "VARCHAR(160) DEFAULT ''"),
     ("prns", "checked_by_name", "VARCHAR(160) DEFAULT ''"),
     ("prns", "purchase_remarks", "TEXT DEFAULT ''"),
+    ("prn_lines", "stock_override", "DOUBLE PRECISION"),
+    ("prn_lines", "stock_overridden_by_name", "VARCHAR(160) DEFAULT ''"),
+    ("prn_lines", "stock_overridden_at", "TIMESTAMP"),
     ("purchase_orders", "prn_id", "INTEGER"),
     ("purchase_orders", "idempotency_key", "VARCHAR(80)"),
     ("purchase_order_lines", "prn_line_id", "INTEGER"),
+    ("prn_lines", "plant_id", "INTEGER"),
 ]
 
 # Internal stock locations seeded as Plants (Main Store = plant_id NULL).

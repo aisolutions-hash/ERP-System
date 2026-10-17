@@ -27,10 +27,11 @@ from ..config import settings
 from ..crud import write_audit
 from ..database import get_db
 from ..models import (
-    AuditLog, Employee, Inventory, PRN, PRNLine, PRNLineMode, PRNStatus,
+    AuditLog, Employee, Inventory, Plant, PRN, PRNLine, PRNLineMode, PRNStatus,
     Product, PurchaseOrder, PurchaseOrderLine, PurchaseStatus,
 )
 from ..schemas import PRNCreate, PRNFulfillmentIn, PRNLineIn, PRNRejectIn, PRNUpdate
+from ..services.prn_pdf import build_prn_pdf_bytes
 
 router = APIRouter(prefix="/prn", tags=["prn"])
 
@@ -61,11 +62,12 @@ def _attachment_dir() -> Path:
 # --- numbering -------------------------------------------------------------
 def _generate_prn_number(db: Session) -> str:
     # ponytail: max-based sequence with a unique constraint + retry in
-    # create_prn serialises concurrent inserts. Ceiling: 9999 PRNs per month
+    # create_prn serialises concurrent inserts. Ceiling: 9999 PRNs
     # (4-digit suffix); switch to a DB sequence if that is ever exceeded.
-    prefix = f"PRN-{date.today():%Y%m}-"
+    # "PRN-____" matches only the short format, so legacy monthly numbers
+    # (PRN-YYYYMM-NNNN) are ignored and numbering starts at PRN-0001.
     last = db.scalar(
-        select(func.max(PRN.prn_number)).where(PRN.prn_number.like(f"{prefix}%"))
+        select(func.max(PRN.prn_number)).where(PRN.prn_number.like("PRN-____"))
     )
     n = 1
     if last:
@@ -73,7 +75,7 @@ def _generate_prn_number(db: Session) -> str:
             n = int(str(last).rsplit("-", 1)[1]) + 1
         except (ValueError, IndexError):
             n = 1
-    return f"{prefix}{n:04d}"
+    return f"PRN-{n:04d}"
 
 
 # --- validation ------------------------------------------------------------
@@ -84,6 +86,12 @@ def _validate_meta(priority: str | None, requirement_type: str | None) -> None:
     if requirement_type is not None and requirement_type not in REQUIREMENT_TYPES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             f"Invalid requirement type. Allowed: {', '.join(REQUIREMENT_TYPES)}")
+
+
+def _validate_dates(prn_date: date | None, required_by: date | None) -> None:
+    if prn_date and required_by and required_by < prn_date:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Required By Date cannot be earlier than the PRN Date")
 
 
 def _validate_lines(lines: list[PRNLineIn], *, require_one: bool) -> None:
@@ -101,35 +109,41 @@ def _validate_lines(lines: list[PRNLineIn], *, require_one: bool) -> None:
                                 "An existing material must be selected for Existing mode")
 
 
-def _stock_snapshot(db: Session, product_id: int, required_qty: float | None = None) -> dict:
-    """Read available / incoming stock from existing records (never invented).
+def _stock_snapshot(db: Session, product_id: int, required_qty: float | None = None,
+                    plant_id: int | None = None) -> dict:
+    """Read the stock snapshot for one product at ONE location (never invented).
 
-    Available = Main Store current_stock (the existing convention in
-    requirements.py). Reserved is not a concept this system tracks, so it is
-    returned as None with a support flag rather than a fabricated number.
-    Incoming = open (ordered / partially received) PO line balance.
+    Available = that location's Inventory.current_stock. ``plant_id=None`` is
+    the existing Main Store default. Locations are never summed. A missing
+    inventory row means stock is UNKNOWN (None), never assumed zero.
+    Reserved is not a concept this system tracks, so it is returned as None
+    with a support flag rather than a fabricated number. Incoming = open
+    (ordered / partially received) PO line balance (product-wide).
     """
-    available = db.scalar(
-        select(func.coalesce(func.sum(Inventory.current_stock), 0)).where(
-            Inventory.product_id == product_id, Inventory.plant_id.is_(None))
-    ) or 0
+    inv = db.scalars(select(Inventory).where(
+        Inventory.product_id == product_id,
+        Inventory.plant_id == (plant_id if plant_id else None),
+    )).first()
+    available = float(inv.current_stock) if inv is not None else None
     incoming = db.scalar(
         select(func.coalesce(func.sum(PurchaseOrderLine.quantity - PurchaseOrderLine.received_qty), 0))
         .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.po_id)
         .where(PurchaseOrderLine.product_id == product_id,
                PurchaseOrder.status.in_(_OPEN_PO_STATUSES))
     ) or 0
-    available = float(available)
     incoming = float(incoming)
     suggested = None
-    if required_qty is not None:
+    if required_qty is not None and available is not None:
         suggested = max(float(required_qty) - available - incoming, 0.0)
+    plant = db.get(Plant, plant_id) if plant_id else None
     return {
         "available_stock": available,
         "reserved_stock": None,
         "reserved_supported": False,
         "incoming_qty": incoming,
         "suggested_qty": suggested,
+        "plant_id": plant_id,
+        "location": plant.name if plant else "Main Store",
     }
 
 
@@ -139,6 +153,8 @@ def _line_out(ln: PRNLine) -> dict:
         "id": ln.id,
         "entry_mode": ln.entry_mode.value,
         "material_id": ln.material_id,
+        "plant_id": ln.plant_id,
+        "location": (ln.plant.name if ln.plant else "Main Store") if ln.material_id else "",
         "material_code": ln.material_code,
         "description": ln.description,
         "specification": ln.specification,
@@ -148,6 +164,9 @@ def _line_out(ln: PRNLine) -> dict:
         "reserved_stock": ln.reserved_stock,
         "incoming_qty": ln.incoming_qty,
         "suggested_qty": ln.suggested_qty,
+        "stock_override": ln.stock_override,
+        "stock_overridden_by_name": ln.stock_overridden_by_name or "",
+        "stock_overridden_at": ln.stock_overridden_at.isoformat() if ln.stock_overridden_at else None,
         "remarks": ln.remarks,
         "attachment_name": ln.attachment_name,
         "has_attachment": bool(ln.attachment_path),
@@ -285,6 +304,17 @@ def departments(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
     return sorted(n for n in names if n)
 
 
+@router.get("/locations", response_model=list)
+def locations(db: Annotated[Session, Depends(get_db)], _: CurrentUser):
+    """Stock locations for the PRN linepicker. Reuses the existing Plant master;
+    Main Store is the system default (plant_id NULL on Inventory)."""
+    plants = db.scalars(select(Plant).where(Plant.is_active.is_(True))
+                        .order_by(Plant.name)).all()
+    return [{"id": None, "name": "Main Store"}] + [
+        {"id": p.id, "name": p.name} for p in plants
+    ]
+
+
 @router.get("/materials", response_model=list)
 def materials(db: Annotated[Session, Depends(get_db)], _: CurrentUser,
               search: str = "", limit: int = Query(50, ge=1, le=200)):
@@ -293,24 +323,25 @@ def materials(db: Annotated[Session, Depends(get_db)], _: CurrentUser,
     if search.strip():
         like = f"%{search.strip()}%"
         stmt = stmt.where(or_(Product.model.ilike(like), Product.item_code.ilike(like),
-                              Product.family.ilike(like)))
+                              Product.name.ilike(like), Product.family.ilike(like)))
     rows = db.scalars(stmt.order_by(Product.model).limit(limit)).all()
     return [{
-        "id": p.id, "item_code": p.item_code, "model": p.model, "uom": p.uom,
-        "category": p.category.value,
-        "label": f"{p.item_code + ' · ' if p.item_code else ''}{p.model}",
+        "id": p.id, "item_code": p.item_code, "model": p.model, "name": p.name or "",
+        "uom": p.uom, "category": p.category.value,
+        "label": f"{p.item_code + ' · ' if p.item_code else ''}{p.name or p.model}",
     } for p in rows]
 
 
 @router.get("/stock-lookup", response_model=dict)
 def stock_lookup(db: Annotated[Session, Depends(get_db)], _: CurrentUser,
-                 material_id: int, required_qty: float | None = None):
+                 material_id: int, required_qty: float | None = None,
+                 plant_id: int | None = None):
     product = db.get(Product, material_id)
     if product is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Material not found")
-    snap = _stock_snapshot(db, material_id, required_qty)
+    snap = _stock_snapshot(db, material_id, required_qty, plant_id)
     snap.update({"material_id": material_id, "uom": product.uom, "model": product.model,
-                 "item_code": product.item_code})
+                 "name": product.name or "", "item_code": product.item_code})
     return snap
 
 
@@ -435,13 +466,30 @@ def get_prn(prn_id: int, db: Annotated[Session, Depends(get_db)], _: CurrentUser
     return out
 
 
+@router.get("/{prn_id}/pdf")
+def prn_pdf(prn_id: int, db: Annotated[Session, Depends(get_db)], _: CurrentUser):
+    """Professional, print-ready PRN PDF (dynamically populated, no mock data).
+    Returns the shaded stock override separately from the inventory snapshot."""
+    prn = _get(db, prn_id)
+    pdf = build_prn_pdf_bytes(prn)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{prn.prn_number}.pdf"'},
+    )
+
+
 # --- write: create / edit --------------------------------------------------
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 def create_prn(body: PRNCreate, db: Annotated[Session, Depends(get_db)], user: AllStaff):
     _validate_meta(body.priority, body.requirement_type)
     _validate_lines(body.lines, require_one=True)
+    _validate_dates(body.prn_date or date.today(), body.required_by_date)
 
     uid, uname = user.id, (user.full_name or user.username)
+    # Manually entered requester name wins; the authenticated user id is still
+    # recorded for authorization/audit (kept separate from the printed name).
+    requester_name = (body.requested_by_name or "").strip() or uname
     prn = None
     for _attempt in range(5):
         prn = PRN(
@@ -450,7 +498,7 @@ def create_prn(body: PRNCreate, db: Annotated[Session, Depends(get_db)], user: A
             department=body.department or "",
             department_head=body.department_head or "",
             company_name=body.company_name or "",
-            requested_by_id=uid, requested_by_name=uname,
+            requested_by_id=uid, requested_by_name=requester_name,
             required_by_date=body.required_by_date,
             priority=body.priority or "Normal",
             requirement_type=body.requirement_type or "Production",
@@ -471,27 +519,36 @@ def create_prn(body: PRNCreate, db: Annotated[Session, Depends(get_db)], user: A
         raise HTTPException(status.HTTP_409_CONFLICT,
                             "Could not allocate a PRN number; please retry")
 
-    _apply_lines(db, prn, body.lines)
+    _apply_lines(db, prn, body.lines, user)
     db.commit()
     db.refresh(prn)
     write_audit(db, user, "CREATE", "prns", prn.id, f"Created PRN {prn.prn_number}")
+    if any(ln.stock_override is not None for ln in prn.lines):
+        write_audit(db, user, "STOCK_OVERRIDE", "prns", prn.id,
+                    "PRN stock override recorded (inventory unchanged)")
     return _prn_out(prn)
 
 
-def _apply_lines(db: Session, prn: PRN, lines: list[PRNLineIn]) -> None:
+def _apply_lines(db: Session, prn: PRN, lines: list[PRNLineIn], user=None) -> bool:
     """Reconcile the PRN's lines in place, then snapshot each existing
     material's stock. Preserved lines keep their id (and any attachment);
-    removed lines are deleted. Manual lines get NULL stock (unknown), never 0."""
+    removed lines are deleted. Manual lines get NULL stock (unknown), never 0.
+
+    A caller-supplied stock override is stored separately on the line (with who
+    and when) and NEVER writes to Inventory. Returns True if any override was
+    set or changed, so the caller can add an audit entry."""
     payload_ids = {ln.id for ln in lines if ln.id}
     existing = {ln.id: ln for ln in prn.lines if ln.id}
+    override_changed = False
     for old_id, old in existing.items():
         if old_id not in payload_ids:
             db.delete(old)
     for ln in lines:
         qty = float(ln.quantity)
         available = reserved = incoming = suggested = None
+        loc_id = ln.plant_id if ln.material_id else None
         if ln.material_id:
-            snap = _stock_snapshot(db, ln.material_id, qty)
+            snap = _stock_snapshot(db, ln.material_id, qty, loc_id)
             available = snap["available_stock"]
             reserved = snap["reserved_stock"]
             incoming = snap["incoming_qty"]
@@ -502,6 +559,7 @@ def _apply_lines(db: Session, prn: PRN, lines: list[PRNLineIn]) -> None:
             prn.lines.append(row)
         row.entry_mode = PRNLineMode.existing if ln.material_id else PRNLineMode.manual
         row.material_id = ln.material_id
+        row.plant_id = loc_id
         row.material_code = ln.material_code or ""
         row.description = ln.description.strip()
         row.specification = ln.specification or ""
@@ -513,24 +571,41 @@ def _apply_lines(db: Session, prn: PRN, lines: list[PRNLineIn]) -> None:
         row.suggested_qty = suggested
         row.remarks = ln.remarks or ""
         row.is_new_material = ln.material_id is None
+        # PRN-specific stock estimate: recorded on the line only. Clearing it
+        # (None) removes the override and reverts to the inventory snapshot.
+        new_override = None if ln.stock_override is None else float(ln.stock_override)
+        if new_override != row.stock_override:
+            override_changed = True
+            row.stock_override = new_override
+            if new_override is None:
+                row.stock_overridden_by_name = ""
+                row.stock_overridden_at = None
+            else:
+                row.stock_overridden_by_name = (user.full_name or user.username) if user else ""
+                row.stock_overridden_at = datetime.utcnow()
     db.flush()
+    return override_changed
 
 
 @router.patch("/{prn_id}", response_model=dict)
 def update_prn(prn_id: int, body: PRNUpdate, db: Annotated[Session, Depends(get_db)],
                user: AllStaff):
     prn = _get(db, prn_id)
-    if prn.status not in (PRNStatus.draft, PRNStatus.rejected):
-        raise HTTPException(status.HTTP_409_CONFLICT,
-                            f"PRN in status '{prn.status.value}' cannot be edited")
     if not _is_requester(prn, user) and user.role.value != "admin":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the requester can edit this PRN")
+    if _linked_transaction_count(db, prn):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This PRN is linked to a purchase order and can no longer be edited.")
     _validate_meta(body.priority, body.requirement_type)
     if body.lines is not None:
         _validate_lines(body.lines, require_one=True)
 
     if body.prn_date is not None:
         prn.prn_date = body.prn_date
+    if body.requested_by_name is not None:
+        # Manual requester name; blank falls back to the editing user's name.
+        prn.requested_by_name = (body.requested_by_name or "").strip() or (user.full_name or user.username)
     if body.department is not None:
         prn.department = body.department
     if body.department_head is not None:
@@ -551,16 +626,75 @@ def update_prn(prn_id: int, body: PRNUpdate, db: Annotated[Session, Depends(get_
         prn.checked_by_name = body.checked_by_name
     if body.purchase_remarks is not None:
         prn.purchase_remarks = body.purchase_remarks
+    _validate_dates(prn.prn_date, prn.required_by_date)
     if body.lines is not None:
-        _apply_lines(db, prn, body.lines)
-    # Editing a rejected PRN returns it to Draft for correction.
-    if prn.status == PRNStatus.rejected:
-        prn.status = PRNStatus.draft
-        prn.rejection_reason = ""
+        override_changed = _apply_lines(db, prn, body.lines, user)
     db.commit()
     db.refresh(prn)
     write_audit(db, user, "UPDATE", "prns", prn.id, f"Edited PRN {prn.prn_number}")
+    if body.lines is not None and override_changed:
+        write_audit(db, user, "STOCK_OVERRIDE", "prns", prn.id,
+                    "PRN stock override recorded (inventory unchanged)")
     return _prn_out(prn)
+
+
+def _linked_transaction_count(db: Session, prn: PRN) -> int:
+    """Count purchase orders / PO lines that reference this PRN. Anything > 0
+    means the PRN is already committed to purchasing history and must never be
+    hard-deleted — it can only be cancelled."""
+    po_count = db.scalar(
+        select(func.count()).select_from(PurchaseOrder)
+        .where(PurchaseOrder.prn_id == prn.id)) or 0
+    line_ids = [ln.id for ln in prn.lines if ln.id]
+    po_line_count = 0
+    if line_ids:
+        po_line_count = db.scalar(
+            select(func.count()).select_from(PurchaseOrderLine)
+            .where(PurchaseOrderLine.prn_line_id.in_(line_ids))) or 0
+    return int(po_count) + int(po_line_count)
+
+
+def _remove_prn_files(prn: PRN) -> None:
+    """Best-effort removal of this PRN's private attachment files. It never
+    touches inventory, stock or any other record."""
+    for ln in prn.lines:
+        if not ln.attachment_path:
+            continue
+        path = Path(ln.attachment_path)
+        if path.is_file() and _attachment_dir() in path.resolve().parents:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    folder = _attachment_dir() / str(prn.id)
+    if folder.is_dir():
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
+
+
+@router.delete("/{prn_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_prn(prn_id: int, db: Annotated[Session, Depends(get_db)], user: AllStaff):
+    """Hard-delete a PRN for the requester or an admin. A PRN referenced by any
+    purchase order is never deleted — cancel it instead so purchasing history
+    stays intact. Deleting a PRN removes only the PRN and its lines; inventory
+    items and stock records are never touched."""
+    prn = _get(db, prn_id)
+    if not _is_requester(prn, user) and user.role.value != "admin":
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "Only the requester or an admin can delete this PRN")
+    if _linked_transaction_count(db, prn):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This PRN is linked to a purchase order and cannot be deleted. "
+            "Cancel it instead.")
+    number = prn.prn_number
+    _remove_prn_files(prn)
+    db.delete(prn)  # lines cascade (delete-orphan); inventory untouched
+    db.commit()
+    write_audit(db, user, "DELETE", "prns", prn_id, f"Deleted PRN {number}")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- workflow transitions --------------------------------------------------

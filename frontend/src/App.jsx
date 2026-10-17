@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard'
 import RawMaterials from './pages/RawMaterials'
 import Purchases from './pages/Purchases'
 import PurchaseRequisitions from './pages/PurchaseRequisitions'
+import PrnDetail from './pages/PrnDetail'
 import Inventory from './pages/Inventory'
 import Production from './pages/Production'
 import Orders from './pages/Orders'
@@ -50,6 +51,7 @@ function App() {
             <Route path="raw-materials" element={<RawMaterials />} />
             <Route path="purchases" element={<Purchases />} />
             <Route path="prn" element={<PurchaseRequisitions />} />
+            <Route path="prn/:id" element={<PrnDetail />} />
             <Route path="inventory" element={<Inventory />} />
             <Route path="stock-movements" element={<StockMovements />} />
             <Route path="production" element={<Production />} />
