@@ -260,9 +260,9 @@ export default function PrnEditorModal({ editor, setEditor, meta, departments, m
         <table className="data-table table-dense">
           <thead><tr>
             <th className="w-10">Sr. No.</th><th className="min-w-40">Item Code</th><th className="min-w-56">Material Description</th>
-            <th>Specification</th><th>UOM</th><th>Required Qty.</th>
-            <th title="Inventory stock (read-only) and optional PRN-specific override">Stock (Inventory / Override)</th>
-            <th>Purpose / Remarks</th><th></th>
+            <th className="min-w-32">Specification</th><th className="min-w-28">UOM</th><th className="min-w-20">Required Qty.</th>
+            <th className="min-w-28" title="Inventory stock (read-only) and optional PRN-specific override">Stock (Inventory / Override)</th>
+            <th className="min-w-40">Purpose / Remarks</th><th></th>
           </tr></thead>
           <tbody>
             {prn.lines.map((l, i) => (
@@ -279,7 +279,7 @@ export default function PrnEditorModal({ editor, setEditor, meta, departments, m
                 </td>
                 <td><input value={l.specification} onChange={(e) => setLine(l._key, { specification: e.target.value })} className="input text-xs py-1 px-2 w-32" /></td>
                 <td>
-                  <select value={l.uom || ''} onChange={(e) => setLine(l._key, { uom: e.target.value, _uomTouched: true })} className="input text-xs py-1 px-2 w-24">
+                  <select value={l.uom || ''} onChange={(e) => setLine(l._key, { uom: e.target.value, _uomTouched: true })} className="input text-xs py-1 px-2 w-28">
                     <option value="">—</option>
                     {l.uom && !UOMS.includes(l.uom) && <option value={l.uom}>{l.uom}</option>}
                     {UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
