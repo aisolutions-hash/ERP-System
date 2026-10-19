@@ -124,17 +124,35 @@ export default function PrnEditorModal({ editor, setEditor, meta, departments, m
 
   // Item Code cell: matches a master material by item_code or model; anything else
   // is a manual (Item Master Review Required) line. Matched lines stay EXISTING.
-  const onCode = (key, value) => {
+  // Typing/Backspace only stores the raw value — applying mid-edit made the code
+  // jump to another item. The material loads only on blur (exact code confirmed)
+  // or when a datalist option is deliberately picked. Clearing the code clears
+  // the fields that material filled.
+  const onCode = (key, value, deliberate = false) => {
     seqRef.current[key] = (seqRef.current[key] ?? 0) + 1
-    const m = findLocal(value)
+    if (!value.trim()) {
+      setLine(key, { material_id: null, entry_mode: 'MANUAL', material_code: value,
+        description: '', uom: '', _uomTouched: false,
+        available_stock: null, reserved_stock: null, incoming_qty: null, suggested_qty: null })
+      return
+    }
+    const m = deliberate && findLocal(value)
     if (m) applyMaterial(key, m)
     else setLine(key, { material_id: null, entry_mode: 'MANUAL', material_code: value })
   }
 
-  // On blur, fall back to a server lookup so a code outside the first page of the
-  // master still resolves to its material (and therefore its stock).
+  // On blur, confirm the code: apply an exact local match (unless the line
+  // already points at that material, so hand-edits aren't clobbered), else fall
+  // back to a server lookup so a code outside the first page of the master still
+  // resolves to its material (and therefore its stock).
   const resolveCode = async (key, value) => {
-    if (findLocal(value)) return
+    if (!value.trim()) return
+    const local = findLocal(value)
+    if (local) {
+      const line = prn.lines.find((l) => l._key === key)
+      if (line?.material_id !== local.id) applyMaterial(key, local)
+      return
+    }
     const v = value.trim().toLowerCase()
     if (v.length < 2) return
     const seq = seqRef.current[key] ?? 0
@@ -269,7 +287,8 @@ export default function PrnEditorModal({ editor, setEditor, meta, departments, m
               <tr key={l._key}>
                 <td className="text-xs text-slate-500">{i + 1}</td>
                 <td>
-                  <input list="prn-materials" value={l.material_code} onChange={(e) => onCode(l._key, e.target.value)}
+                  <input list="prn-materials" value={l.material_code}
+                    onChange={(e) => onCode(l._key, e.target.value, e.nativeEvent.inputType === 'insertReplacementText')}
                     onBlur={(e) => resolveCode(l._key, e.target.value)}
                     placeholder="Code or new item" className="input text-xs py-1 px-2 w-full font-mono" />
                 </td>
