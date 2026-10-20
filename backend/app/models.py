@@ -672,6 +672,7 @@ class SalesOrder(Base):
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.new, index=True)
     total_value: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     remarks: Mapped[str] = mapped_column(Text, default="")
+    transport_name: Mapped[str] = mapped_column(String(160), default="")
     source_excel: Mapped[str] = mapped_column(String(255), default="")
     source_sheet: Mapped[str] = mapped_column(String(120), default="")
     source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)

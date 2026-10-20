@@ -432,6 +432,7 @@ def serialize_local_order(db: Session, o: SalesOrder) -> dict:
         "delivery_date": o.required_delivery_date,
         "commitment": o.remarks,
         "remarks": o.remarks,
+        "transport_name": o.transport_name or "",
         "status": friendly,
         "order_status": o.status.value,
         "lines": lines,

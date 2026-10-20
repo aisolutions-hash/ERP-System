@@ -11,6 +11,8 @@ const today = () => new Date().toISOString().slice(0, 10)
 
 const emptyLine = { product_id: null, item_code: '', description: '', quantity: 1, uom: '', unit_price: null, less: null, id: null }
 
+const TRANSPORT_OPTIONS = ['Self', 'ACPL Transportation']
+
 const errText = (err) => {
   const d = err?.response?.data?.detail
   if (Array.isArray(d)) return d.map((x) => x.msg || x).join('. ')
@@ -108,7 +110,7 @@ export default function LocalOrders() {
   }
 
   const openCreate = () => {
-    setForm({ customer_id: null, customer_name: '', customer_mobile: '', customer_email: '', local_order_type: 'TRADING', order_date: today(), delivery_date: '', remarks: '', so_no: '', customer_po_no: '', lines: [{ ...emptyLine }] })
+    setForm({ customer_id: null, customer_name: '', customer_mobile: '', customer_email: '', local_order_type: 'TRADING', order_date: today(), delivery_date: '', remarks: '', transport_name: '', so_no: '', customer_po_no: '', lines: [{ ...emptyLine }] })
     setErrors({})
     setEditing(null)
     setShowOrderForm(true)
@@ -124,6 +126,7 @@ export default function LocalOrders() {
       customer_po_no: r.customer_po_no || '',
       status: r.order_status || 'New',
       remarks: r.commitment || r.remarks || '',
+      transport_name: r.transport_name || '',
       lines: (r.lines || []).map((ln) => ({
         id: ln.id, product_id: ln.product_id, item_code: ln.item_code || '',
         description: ln.description || ln.model || '', quantity: ln.quantity,
@@ -180,6 +183,7 @@ export default function LocalOrders() {
     so_no: (form.so_no || '').trim(),
     customer_po_no: (form.customer_po_no || '').trim(),
     remarks: form.remarks || '',
+    transport_name: (form.transport_name || '').trim(),
     status: editing ? (form.status || undefined) : 'New',
     lines: (form.lines || []).map((l) => ({
       id: editing ? (l.id || null) : undefined,
@@ -237,7 +241,7 @@ export default function LocalOrders() {
       `- ${l.description || l.model || l.item_code || 'Item'}: ${fmtNum(l.quantity)}${l.uom ? ' ' + l.uom : ''}` +
       (l.rate != null ? ` @ ${fmtNum(l.rate)} = ${fmtNum(l.amount)}` : ''),
     ).join('\n')
-    const text = `LOCAL ORDER ${d.order_no}\nCustomer: ${d.customer || '—'}\nSO No: ${d.so_no || '—'} · PO No: ${d.customer_po_no || '—'}\nOrder Date: ${d.order_date || '—'} · Delivery: ${d.delivery_date || '—'}\nStatus: ${d.status} · Dispatched: ${fmtNum(d.dispatched_qty)} · Pending: ${fmtNum(d.pending_qty)}\nTotal Amount: ${fmtNum(d.total_value)}\n\n${items}`
+    const text = `LOCAL ORDER ${d.order_no}\nCustomer: ${d.customer || '—'}\nSO No: ${d.so_no || '—'} · PO No: ${d.customer_po_no || '—'}\nOrder Date: ${d.order_date || '—'} · Delivery: ${d.delivery_date || '—'}\nTransport: ${d.transport_name || '—'}\nStatus: ${d.status} · Dispatched: ${fmtNum(d.dispatched_qty)} · Pending: ${fmtNum(d.pending_qty)}\nTotal Amount: ${fmtNum(d.total_value)}\nCommitment / Remarks: ${d.commitment || d.remarks || '—'}\n\n${items}`
     const url = `${window.location.origin}/local-orders?order=${d.id}`
     const copy = async () => {
       try { await navigator.clipboard.writeText(`${text}\n\n${url}`); flash('Order details copied to clipboard') }
@@ -288,6 +292,7 @@ export default function LocalOrders() {
   th { background: #f4f4f4; text-transform: uppercase; font-size: 9px; letter-spacing: .4px; color: #111; }
   .r { text-align: right; }
   .total td { font-weight: 700; background: #fafafa; color: #111; }
+  .remarks { border: 1px solid #999; border-radius: 6px; padding: 8px 10px; color: #111; white-space: pre-wrap; word-break: break-word; }
   .foot { margin-top: 26px; font-size: 10px; color: #222; }
   @media print { body { margin: 12mm; } }
 </style></head><body>
@@ -308,11 +313,14 @@ export default function LocalOrders() {
   <div><span class="lbl">PO Number</span><span class="val">${escHtml(d.customer_po_no || '—')}</span></div>
   <div><span class="lbl">Order Date</span><span class="val">${escHtml(d.order_date || '—')}</span></div>
   <div><span class="lbl">Delivery Date</span><span class="val">${escHtml(d.delivery_date || '—')}</span></div>
+  <div><span class="lbl">Transport Name</span><span class="val">${escHtml(d.transport_name || '—')}</span></div>
   <div><span class="lbl">Status</span><span class="val">${escHtml(d.status || '—')}</span></div>
   <div><span class="lbl">Total Amount</span><span class="val">${fmtNum(d.total_value)}</span></div>
   <div><span class="lbl">Dispatched</span><span class="val">${fmtNum(d.dispatched_qty)}</span></div>
   <div><span class="lbl">Pending</span><span class="val">${fmtNum(d.pending_qty)}</span></div>
 </div>
+<h2>Commitment / Remarks</h2>
+<div class="remarks">${escHtml(d.commitment || d.remarks || '—')}</div>
 <h2>Order Lines</h2>
 <table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Less</th><th class="r">Amount</th><th class="r">Dispatched</th><th class="r">Pending</th></tr></thead>
 <tbody>${lineRows || '<tr><td colspan="7">No lines</td></tr>'}</tbody>
@@ -721,6 +729,7 @@ export default function LocalOrders() {
               <div><span className="text-slate-500 block text-xs">Order Type</span><Badge className={detail.order_type === 'MANUFACTURING' ? 'bg-violet-100 text-violet-700' : 'bg-cyan-100 text-cyan-700'}>{detail.order_type || 'TRADING'}</Badge></div>
               <div><span className="text-slate-500 block text-xs">Order Date</span><span className="font-medium">{detail.order_date}</span></div>
               <div><span className="text-slate-500 block text-xs">Delivery Date</span><span className="font-medium">{detail.delivery_date || '—'}</span></div>
+              <div><span className="text-slate-500 block text-xs">Transport Name</span><span className="font-medium break-words">{detail.transport_name || '—'}</span></div>
               <div><span className="text-slate-500 block text-xs">Status</span><StatusBadge status={detail.status} /></div>
               <div><span className="text-slate-500 block text-xs">Dispatched</span><span className="font-semibold">{fmtNum(detail.dispatched_qty)}</span></div>
               <div><span className="text-slate-500 block text-xs">Pending</span><span className={detail.pending_qty > 0 ? 'font-semibold' : 'text-green-600 font-semibold'}>{fmtNum(detail.pending_qty)}</span></div>
@@ -748,7 +757,10 @@ export default function LocalOrders() {
               </div>
             )}
 
-            {detail.commitment && <div className="mb-3 text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2">Commitment: {detail.commitment}</div>}
+            <div className="mb-3 text-xs bg-slate-50 rounded-lg px-3 py-2">
+              <span className="block text-slate-400 uppercase tracking-wide text-[10px] mb-0.5">Commitment / Remarks</span>
+              <span className="text-slate-700 whitespace-pre-wrap break-words">{detail.commitment || detail.remarks || '—'}</span>
+            </div>
 
             <div className="flex items-center gap-2 mb-2">
               <PackageSearch size={15} className="text-amber-500" />
@@ -904,6 +916,16 @@ export default function LocalOrders() {
           <div className="sm:col-span-2">
             <label className="block text-slate-500 text-xs mb-1">Delivery Date</label>
             <input type="date" value={form.delivery_date || ''} onChange={(e) => setForm({ ...form, delivery_date: e.target.value })} className="input" />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block text-slate-500 text-xs mb-1">Transport Name</label>
+            <SearchSelect
+              options={TRANSPORT_OPTIONS.map((t) => ({ id: t, label: t }))}
+              value={TRANSPORT_OPTIONS.includes(form.transport_name) ? form.transport_name : null}
+              initialLabel={TRANSPORT_OPTIONS.includes(form.transport_name) ? '' : (form.transport_name || '')}
+              placeholder="Select or type a transport name"
+              onChange={(id, manual) => setForm((f) => ({ ...f, transport_name: id != null ? id : manual }))}
+            />
           </div>
           <div className="sm:col-span-2">
             <label className="block text-slate-500 text-xs mb-1">Commitment / Remarks</label>

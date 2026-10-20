@@ -21,7 +21,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Integer, delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..auth import CurrentUser, AllStaff, ManagerOrAdmin
@@ -51,9 +51,17 @@ router = APIRouter(prefix="/local-orders", tags=["local-orders"])
 
 
 def _local_no(db: Session) -> str:
-    prefix = f"LOC-{date.today().strftime('%Y%m%d')}-"
-    n = db.scalar(select(func.max(func.cast(func.substr(SalesOrder.order_no, len(prefix) + 1), Integer)))
-                  .where(SalesOrder.order_no.like(f"{prefix}%"))) or 0
+    """Next short local-order number: LOC-001, LOC-002, …
+
+    Only the numeric short format is considered, so legacy date-stamped numbers
+    (LOC-YYYYMMDD-NNN) are ignored and never collide with the new sequence.
+    """
+    prefix = "LOC-"
+    existing = db.scalars(
+        select(SalesOrder.order_no).where(SalesOrder.order_no.like(f"{prefix}%"))
+    ).all()
+    n = max((int(x[len(prefix):]) for x in existing
+             if x and x[len(prefix):].isdigit()), default=0)
     return f"{prefix}{n + 1:03d}"
 
 
@@ -719,6 +727,7 @@ def create_local_order(body: LocalOrderCreate, db: Annotated[Session, Depends(ge
                    order_date=body.order_date or date.today(),
                    required_delivery_date=body.required_delivery_date,
                    status=OrderStatus.new, remarks=body.remarks or "",
+                   transport_name=(body.transport_name or "").strip()[:160],
                    lines=lines)
     _recalc_local_total(db, o, lines)
     db.add(o)
@@ -768,6 +777,8 @@ def update_local_order(order_id: int, body: LocalOrderUpdate,
         o.required_delivery_date = body.required_delivery_date
     if "remarks" in data and body.remarks is not None:
         o.remarks = body.remarks
+    if "transport_name" in data and body.transport_name is not None:
+        o.transport_name = (body.transport_name or "").strip()[:160]
     # Status is user-controlled: an explicit status in the request is stored
     # as-is and is never re-derived by stock/Production side effects.
     manual_status = "status" in data and body.status is not None

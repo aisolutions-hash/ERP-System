@@ -732,6 +732,7 @@ class LocalOrderCreate(BaseModel):
     required_delivery_date: Optional[date] = None
     status: OrderStatus = OrderStatus.new
     remarks: str = ""
+    transport_name: str = ""
     lines: list[LocalOrderLineIn] = []
 
     _status = field_validator("status", mode="before")(_order_status)
@@ -749,6 +750,7 @@ class LocalOrderUpdate(BaseModel):
     local_order_type: Optional[str] = None
     status: Optional[OrderStatus] = None
     remarks: Optional[str] = None
+    transport_name: Optional[str] = None
     lines: Optional[list[LocalOrderLineIn]] = None
 
     _status = field_validator("status", mode="before")(_order_status)
