@@ -198,7 +198,6 @@ def build_prn_pdf_bytes(prn: PRN) -> bytes:
         Paragraph("Sr.<br/>No.", style_th),
         Paragraph("Item Code", style_th),
         Paragraph("Material Description", style_th),
-        Paragraph("Specification /<br/>Grade / Size", style_th),
         Paragraph("UOM", style_th),
         Paragraph("Required<br/>Quantity", style_th),
         Paragraph("Stock", style_th),
@@ -207,13 +206,10 @@ def build_prn_pdf_bytes(prn: PRN) -> bytes:
     rows = []
     for idx, ln in enumerate(prn.lines, start=1):
         desc = (ln.description or "—").replace("\n", "<br/>")
-        if ln.is_new_material:
-            desc += "<br/><font size=6 color='#b45309'>Manual Entry – Master Review Required</font>"
         rows.append([
             Paragraph(str(idx), style_cell),
             Paragraph((ln.material_code or "—").replace("\n", "<br/>"), style_cell),
             Paragraph(desc, style_wrap),
-            Paragraph((ln.specification or "—").replace("\n", "<br/>"), style_wrap),
             Paragraph(ln.uom or "—", style_cell),
             Paragraph(_fmt_num(ln.quantity) or "—", style_qty),
             Paragraph(_stock_text(ln), style_cell),
@@ -222,14 +218,14 @@ def build_prn_pdf_bytes(prn: PRN) -> bytes:
     if rows:
         line_table = Table(
             [headers] + rows, repeatRows=1,
-            colWidths=[9 * mm, 22 * mm, 40 * mm, 30 * mm, 12 * mm, 18 * mm, 23 * mm, 24 * mm],
+            colWidths=[9 * mm, 22 * mm, 70 * mm, 12 * mm, 18 * mm, 23 * mm, 24 * mm],
         )
         line_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), _NAVY),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, 0), 7.5),
             ("FONTSIZE", (0, 1), (-1, -1), 7.5),
-            ("ALIGN", (5, 0), (5, -1), "RIGHT"),
+            ("ALIGN", (4, 0), (4, -1), "RIGHT"),
             ("ALIGN", (0, 0), (0, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("GRID", (0, 0), (-1, -1), 0.75, _GRID),
