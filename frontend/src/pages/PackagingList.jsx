@@ -18,6 +18,12 @@ const calcNet = (gross, less) => round6((Number(gross) || 0) - (Number(less) || 
 
 const emptyLine = () => ({ sr_no: 1, gross_wt: '', less: '', net_wt: 0, lessTouched: false })
 
+// A starter row that has never been filled in — replaced when adding boxes in bulk.
+const isUntouchedBlank = (l) => (l.gross_wt === '' || l.gross_wt == null) && !l.lessTouched
+
+// Upper bound for a single "Add Boxes" action so a mistyped count cannot hang the UI.
+const MAX_BOXES_AT_ONCE = 500
+
 const emptyForm = () => ({
   list_date: today(),
   customer_id: null,
@@ -91,6 +97,8 @@ export default function PackagingList() {
   const [form, setForm] = useState(emptyForm())
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
+  const [boxCount, setBoxCount] = useState('')
+  const [boxCountError, setBoxCountError] = useState('')
 
   const [warning, setWarning] = useState(null)
   const [showDelete, setShowDelete] = useState(null)
@@ -198,6 +206,8 @@ export default function PackagingList() {
     setForm(emptyForm())
     setEditing(null)
     setErrors({})
+    setBoxCount('')
+    setBoxCountError('')
     setShowForm(true)
   }
 
@@ -208,6 +218,8 @@ export default function PackagingList() {
     setForm(emptyForm())
     setEditing(null)
     setErrors({})
+    setBoxCount('')
+    setBoxCountError('')
     setShowForm(false)
   }
 
@@ -272,6 +284,8 @@ export default function PackagingList() {
     })
     setEditing(row)
     setErrors({})
+    setBoxCount('')
+    setBoxCountError('')
     setShowForm(true)
   }
 
@@ -284,6 +298,37 @@ export default function PackagingList() {
         less: f.less_default === '' || f.less_default == null ? '' : String(f.less_default),
       }],
     }))
+  }
+
+  const addBoxes = () => {
+    const raw = String(boxCount).trim()
+    if (!/^\d+$/.test(raw)) {
+      setBoxCountError('Enter a whole number of boxes (1 or more).')
+      return
+    }
+    const count = Number(raw)
+    if (count < 1) {
+      setBoxCountError('Enter at least 1 box.')
+      return
+    }
+    if (count > MAX_BOXES_AT_ONCE) {
+      setBoxCountError(`Enter ${MAX_BOXES_AT_ONCE} boxes or fewer at a time.`)
+      return
+    }
+    setBoxCountError('')
+    setBoxCount('')
+    const defLess = form.less_default === '' || form.less_default == null ? '' : String(form.less_default)
+    const existing = (form.lines || []).filter((l) => !isUntouchedBlank(l))
+    pendingFocusRef.current = existing.length
+    setForm((f) => {
+      const kept = (f.lines || []).filter((l) => !isUntouchedBlank(l))
+      const added = Array.from({ length: count }, (_, k) => ({
+        ...emptyLine(),
+        sr_no: kept.length + k + 1,
+        less: defLess,
+      }))
+      return { ...f, lines: [...kept, ...added].map((l, idx) => ({ ...l, sr_no: idx + 1 })) }
+    })
   }
 
   const updateLine = (i, key, value) => {
@@ -748,8 +793,27 @@ const setDefaultLess = (value) => {
             <h4 className="font-semibold text-slate-800 text-sm">Box Weights</h4>
             <p className="text-xs text-slate-500">Less follows Default Less automatically — Net WT = Gross WT − Less.</p>
           </div>
-          <button onClick={() => { pendingFocusRef.current = (form.lines || []).length; addLine() }} className="btn btn-sm btn-secondary"><Plus size={14} /> Add Box</button>
+          <div className="flex items-end gap-2 flex-wrap">
+            <div>
+              <label htmlFor="box-count" className="label">Number of Boxes</label>
+              <input
+                id="box-count"
+                type="number"
+                step="1"
+                min="1"
+                inputMode="numeric"
+                value={boxCount}
+                onChange={(e) => { setBoxCount(e.target.value); setBoxCountError('') }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addBoxes() } }}
+                placeholder="e.g. 10"
+                className={`input w-28 py-1.5 text-right ${boxCountError ? 'border-red-300' : ''}`}
+              />
+            </div>
+            <button onClick={addBoxes} disabled={!boxCount} className="btn btn-sm btn-primary"><Plus size={14} /> Add Boxes</button>
+            <button onClick={() => { pendingFocusRef.current = (form.lines || []).length; addLine() }} className="btn btn-sm btn-secondary"><Plus size={14} /> Add Box</button>
+          </div>
         </div>
+        {boxCountError && <p className="text-red-500 text-xs mb-2">{boxCountError}</p>}
         {errors.lines && <p className="text-red-500 text-xs mb-2">{errors.lines}</p>}
 
         <div className="overflow-x-auto border rounded-lg">
