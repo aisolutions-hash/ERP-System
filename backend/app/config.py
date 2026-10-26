@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     # ---- GCS ----
     GCS_BUCKET: str = "kalisoftai-datahub"
     GCS_EXCEL_FILE: str = "Kalika_inventory/Daily Report Aug-26.xlsx"
+    GCS_STAMP_FILE: str = "Kalika_inventory/stamp.png"
     GOOGLE_APPLICATION_CREDENTIALS: str | None = None
     REPORT_DIR: Path = BASE_DIR / "reports"
 

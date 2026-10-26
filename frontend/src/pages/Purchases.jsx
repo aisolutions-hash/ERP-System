@@ -5,6 +5,7 @@ import api, { downloadFile } from '../lib/api'
 import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard, SearchSelect } from '../components/ui'
 import Table from '../components/Table'
 import { fmtNum } from '../lib/format'
+import ImportPOForm, { DEFAULT_COMPANY, DEFAULT_TERMS, DEFAULT_BILLING } from '../components/ImportPOForm'
 
 const statusCls = {
   Draft: 'bg-gray-100 text-gray-600',
@@ -18,6 +19,23 @@ const statuses = ['Draft', 'Ordered', 'Partially Received', 'Received', 'Cancell
 const makeKey = () => (typeof crypto !== 'undefined' && crypto.randomUUID
   ? crypto.randomUUID()
   : `${Date.now()}-${Math.random().toString(36).slice(2)}`)
+
+// Company stamp for browser-generated PO PDFs. Fetched once from the backend
+// (which reads it from GCS) and cached as a data URL for the session.
+let stampPromise = null
+const loadStamp = () => {
+  if (!stampPromise) {
+    stampPromise = api.get('/reports/stamp', { responseType: 'blob' })
+      .then(({ data }) => new Promise((resolve) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result)
+        reader.onerror = () => resolve(null)
+        reader.readAsDataURL(data)
+      }))
+      .catch(() => { stampPromise = null; return null })
+  }
+  return stampPromise
+}
 
 export default function Purchases() {
   const [items, setItems] = useState([])
@@ -126,15 +144,28 @@ export default function Purchases() {
 
   const openNew = () => {
     setForm({
-      po_number: '', order_date: new Date().toISOString().slice(0, 10), status: 'Ordered', notes: '',
+      po_number: '', order_date: '', status: 'Ordered', notes: '',
       supplier_id: '', supplier_name: '', supplier_gstin: '', supplier_address: '', supplier_phone: '', supplier_email: '',
       prn_id: null, idempotency_key: makeKey(),
+      po_type: 'regular',
       lines: [{ product_id: '', description: '', item_code: '', quantity: '', received_qty: 0, rate: '', amount: '', uom: '', tax_percent: null, discount_percent: null }],
+      import_lines: [{ srno: 1, item_description: '', part_no: '', make: '', quantity: '', uom: 'Nos', rate_usd: '', amount: '' }],
+      import_date: '',
+      import_customer_id: '167428',
+      import_valid_until: '',
+      import_supplier_name: '',
+      import_supplier_addr1: '',
+      import_supplier_addr2: '',
+      import_supplier_email: '',
     })
     setError(null); setShowForm(true)
   }
 
   const openEdit = (po) => {
+    const isImport = (po.po_type || '').toLowerCase() === 'import'
+    const importLines = isImport && (po.lines || []).length > 0
+      ? (po.lines || []).map((l, idx) => ({ srno: idx + 1, item_description: l.description || '', part_no: l.item_code || '', make: l.make || '', quantity: l.quantity, uom: l.uom || 'Nos', rate_usd: l.rate ?? '', amount: l.amount ?? '' }))
+      : [{ srno: 1, item_description: '', part_no: '', make: '', quantity: '', uom: 'Nos', rate_usd: '', amount: '' }]
     setForm({
       id: po.id, po_number: po.po_number, supplier_id: po.supplier_id ?? '',
       supplier_name: po.supplier?.name || po.supplier_name || '',
@@ -144,7 +175,16 @@ export default function Purchases() {
       supplier_email: po.supplier?.email || '',
       order_date: po.order_date, status: po.status, notes: po.notes || '',
       prn_id: po.prn_id || null,
+      po_type: po.po_type || 'regular',
       lines: (po.lines || []).map((l) => ({ id: l.id, prn_line_id: l.prn_line_id || null, product_id: l.product_id ?? '', description: l.description || '', item_code: l.item_code || '', quantity: l.quantity, received_qty: l.received_qty || 0, rate: l.rate ?? '', amount: l.amount ?? '', uom: l.uom || '', tax_percent: l.tax_percent ?? null, discount_percent: l.discount_percent ?? null })),
+      import_lines: importLines,
+      import_date: po.order_date || '',
+      import_customer_id: '167428',
+      import_valid_until: po.valid_until || '',
+      import_supplier_name: po.import_supplier_name || '',
+      import_supplier_addr1: po.import_supplier_addr1 || '',
+      import_supplier_addr2: po.import_supplier_addr2 || '',
+      import_supplier_email: po.import_supplier_email || '',
     })
     setError(null); setShowForm(true)
   }
@@ -186,18 +226,23 @@ export default function Purchases() {
   }
 
   const save = async () => {
-    const payload = {
-      po_number: form.po_number,
-      supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
-      supplier_name: (form.supplier_name || '').trim(),
-      supplier_gstin: (form.supplier_gstin || '').trim(),
-      supplier_address: (form.supplier_address || '').trim(),
-      supplier_phone: (form.supplier_phone || '').trim(),
-      supplier_email: (form.supplier_email || '').trim(),
-      order_date: form.order_date, status: form.status || 'Ordered', notes: form.notes || '',
-      // PRN link + dedupe token apply only when creating (required by the queue flow).
-      ...(form.id ? {} : { prn_id: form.prn_id || null, idempotency_key: form.idempotency_key || '' }),
-      lines: form.lines.filter((l) => l.product_id || (l.description || '').trim()).map((l) => ({
+    const isImport = (form.po_type || 'regular') === 'import'
+    let linesPayload = []
+    if (isImport) {
+      linesPayload = (form.import_lines || []).filter((l) => (l.item_description || l.description || '').trim() || l.quantity).map((l) => ({
+        description: l.item_description || l.description || '',
+        item_code: l.part_no || l.item_code || '',
+        make: l.make || '',
+        quantity: Number(l.quantity || 0),
+        received_qty: 0,
+        rate: l.rate_usd !== '' && l.rate_usd != null ? Number(l.rate_usd) : (l.rate !== '' && l.rate != null ? Number(l.rate) : null),
+        amount: l.amount !== '' && l.amount != null ? Number(l.amount) : (Number(l.quantity || 0) * Number(l.rate_usd || l.rate || 0)),
+        uom: l.uom || 'Nos',
+        tax_percent: null,
+        discount_percent: null,
+      }))
+    } else {
+      linesPayload = form.lines.filter((l) => l.product_id || (l.description || '').trim()).map((l) => ({
         product_id: l.product_id ? Number(l.product_id) : null,
         description: l.description || '',
         item_code: l.item_code || '',
@@ -208,10 +253,24 @@ export default function Purchases() {
         tax_percent: l.tax_percent ?? null,
         discount_percent: l.discount_percent ?? null,
         prn_line_id: l.prn_line_id || null,
-      })),
+      }))
     }
-    if (!payload.po_number) { setError('PO number is required'); return }
-    if (!payload.supplier_id && !payload.supplier_name) { setError('Select or type a supplier'); return }
+    const payload = {
+      po_number: String(form.po_number || '').trim(),
+      supplier_id: isImport ? null : (form.supplier_id ? Number(form.supplier_id) : null),
+      supplier_name: isImport ? (form.import_supplier_name || '') : (form.supplier_name || '').trim(),
+      supplier_gstin: (form.supplier_gstin || '').trim(),
+      supplier_address: isImport ? ([form.import_supplier_addr1, form.import_supplier_addr2].filter(Boolean).join(' ').trim()) : (form.supplier_address || '').trim(),
+      supplier_phone: (form.supplier_phone || '').trim(),
+      supplier_email: isImport ? (form.import_supplier_email || '') : (form.supplier_email || '').trim(),
+      order_date: (form.order_date && form.order_date.trim()) ? form.order_date : new Date().toISOString().slice(0, 10), status: form.status || 'Ordered', notes: form.notes || '',
+      valid_until: form.import_valid_until || null,
+      po_type: form.po_type || 'regular',
+      ...(form.id ? {} : { prn_id: form.prn_id || null, idempotency_key: form.idempotency_key || '' }),
+      lines: linesPayload,
+    }
+    if (!(payload.po_number && String(payload.po_number).trim())) { setError('PO number is required'); return }
+    if (!isImport && !payload.supplier_id && !payload.supplier_name) { setError('Select or type a supplier'); return }
     if (payload.lines.length === 0) { setError('Add at least one line'); return }
     try {
       if (form.id) {
@@ -271,7 +330,7 @@ export default function Purchases() {
     } finally { setReceiveBusy(false) }
   }
 
-  const buildPoHtml = (d) => {
+  const buildPoHtml = (d, stampSrc) => {
     const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
     const lineRows = (d.lines || []).map((l) => {
       const pending = Math.max((Number(l.quantity) || 0) - (Number(l.received_qty) || 0), 0)
@@ -307,6 +366,10 @@ export default function Purchases() {
   th { background: #f4f4f4; text-transform: uppercase; font-size: 9px; letter-spacing: .4px; color: #555; }
   .r { text-align: right; }
   .total td { font-weight: 700; background: #fafafa; }
+  .sign { width: 190px; margin: 24px 0 0 auto; text-align: center; }
+  .sign .for { font-size: 11px; margin-bottom: 6px; }
+  .sign img { display: block; height: 70px; width: auto; max-width: 190px; object-fit: contain; margin: 0 auto 4px; }
+  .sign .line { border-top: 1px solid #111; padding-top: 3px; font-size: 11px; }
   .foot { margin-top: 26px; font-size: 10px; color: #888; }
   @media print { body { margin: 12mm; } }
 </style></head><body>
@@ -333,26 +396,158 @@ export default function Purchases() {
 <table><thead><tr><th>Item</th><th class="r">Item Code</th><th class="r">Qty</th><th class="r">Received</th><th class="r">Pending</th><th class="r">Rate</th><th class="r">UOM</th><th class="r">Disc %</th><th class="r">GST %</th><th class="r">Amount</th></tr></thead>
 <tbody>${lineRows || '<tr><td colspan="10">No lines</td></tr>'}</tbody>
 <tfoot><tr class="total"><td colspan="9">Order Total</td><td class="r">${fmtNum(d.total_amount)}</td></tr></tfoot></table>
+<div class="sign">
+  <div class="for">For KALIKA ENTERPRISES</div>
+  ${stampSrc ? `<img src="${stampSrc}" alt="Stamp" />` : ''}
+  <div class="line">Authorized Signatory</div>
+</div>
 <div class="foot">Generated by Kalika ERP — Purchases</div>
 </body></html>`
   }
 
-  const downloadPdf = () => {
+  // Import PO layout: mirrors the IMPORT PO FORMAT sheet (company/supplier
+  // blocks, billing & shipping, USD line table, terms and signature).
+  const buildImportPoHtml = (d, stampSrc) => {
+    const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+    const money = (v) => (v == null || v === '' ? '—' : fmtNum(v))
+    const row = (label, value) => `<tr><th>${label}</th><td>${escHtml(value ?? '') || '—'}</td></tr>`
+    const lineRows = (d.lines || []).map((l, i) => `<tr>
+      <td class="c">${i + 1}</td>
+      <td>${escHtml(l.description || '—')}</td>
+      <td>${escHtml(l.item_code || '—')}</td>
+      <td>${escHtml(l.make || '—')}</td>
+      <td class="r">${fmtNum(l.quantity)}</td>
+      <td class="c">${escHtml(l.uom || '—')}</td>
+      <td class="r">${money(l.rate)}</td>
+      <td class="r">${money(l.amount)}</td>
+    </tr>`).join('')
+    const total = (d.lines || []).reduce((s, l) => s + Number(l.amount || 0), 0)
+    const logoUrl = `${window.location.origin}/Kalika_logo.png`
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Import Purchase Order ${escHtml(d.po_number)}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #111; margin: 28px; background: #fff; }
+  .header { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+  .header img { height: 52px; max-width: 170px; object-fit: contain; }
+  .header .title { font-size: 20px; font-weight: 700; letter-spacing: 1px; }
+  .header .sub { font-size: 11px; color: #555; }
+  .top { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .company { line-height: 1.6; }
+  .company .name { font-weight: 700; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; }
+  .meta th, .meta td { padding: 3px 6px; text-align: left; font-size: 11px; }
+  .meta th { width: 34%; background: #fff7d6; border: 1px solid #e5e7eb; font-weight: 600; }
+  .meta td { border: 1px solid #e5e7eb; }
+  .block { border: 1px solid #e5e7eb; padding: 8px 10px; margin-top: 10px; line-height: 1.6; }
+  .block .lbl { font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; color: #555; margin-bottom: 4px; }
+  .billing th { width: 38%; text-align: left; font-weight: 600; font-size: 11px; padding: 3px 6px; }
+  .billing td { font-size: 11px; padding: 3px 6px; }
+  .confirm { margin: 16px 0 6px; font-size: 11px; }
+  .lines th, .lines td { border: 1px solid #9ca3af; padding: 5px 6px; font-size: 11px; }
+  .lines th { background: #fff7d6; text-transform: uppercase; font-size: 9px; letter-spacing: .4px; }
+  .lines .c { text-align: center; }
+  .lines .r { text-align: right; }
+  .lines tfoot td { font-weight: 700; background: #fafafa; }
+  .bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 18px; }
+  .terms th, .terms td { border: 1px solid #9ca3af; padding: 4px 6px; font-size: 10px; }
+  .terms .n { width: 22px; text-align: center; }
+  .terms .head { font-weight: 700; text-transform: uppercase; }
+  .sign { width: 190px; margin-left: auto; text-align: center; padding-top: 8px; }
+  .sign .for { margin-bottom: 6px; }
+  .sign img { display: block; height: 70px; width: auto; max-width: 190px; object-fit: contain; margin: 0 auto 4px; }
+  .sign .line { border-top: 1px solid #111; padding-top: 3px; }
+  .contact { margin-top: 18px; font-size: 11px; }
+  .contact .mail { color: #1d4ed8; }
+  @media print { body { margin: 12mm; } }
+</style></head><body>
+<div class="header">
+  <img src="${logoUrl}" alt="Kalika" />
+  <div>
+    <div class="title">PURCHASE ORDER</div>
+    <div class="sub">Import Purchase Order — ${escHtml(d.po_number)}</div>
+  </div>
+</div>
+<div class="top">
+  <div class="company">
+    <div class="name">${escHtml(DEFAULT_COMPANY.companyName)}</div>
+    <div>${escHtml(DEFAULT_COMPANY.address1)}</div>
+    <div>${escHtml(DEFAULT_COMPANY.website)}</div>
+    <div>${escHtml(DEFAULT_COMPANY.phone)}</div>
+    <div>${escHtml(DEFAULT_COMPANY.approvedBy)}</div>
+  </div>
+  <table class="meta">
+    ${row('DATE', d.order_date)}
+    ${row('PO NO', d.po_number)}
+    ${row('CUSTOMER ID', '167428')}
+    ${row('VALID UNTIL', d.valid_until || '—')}
+  </table>
+</div>
+
+<div class="block">
+  <div class="lbl">Supplier</div>
+  <div>${escHtml(d.supplier?.name || d.supplier_name || '—')}</div>
+  <div>${escHtml(d.supplier?.address || '—')}</div>
+  <div>EMAIL ID:- ${escHtml(d.supplier?.email || '—')}</div>
+</div>
+
+<div class="block">
+  <div class="lbl">Details for Billing and Shipping</div>
+  <table class="billing">
+    ${row('Invoice in favor', DEFAULT_BILLING.invoiceInFavor)}
+    ${row('Billing &amp; Shipping', `${DEFAULT_BILLING.billingShipping1} ${DEFAULT_BILLING.billingShipping2}`)}
+    ${row('ZIP CODE', DEFAULT_BILLING.zipCode)}
+    ${row('COUNTRY', DEFAULT_BILLING.country)}
+  </table>
+</div>
+
+<div class="confirm">We hereby confirm the order for following line items TO BE IMPORTED FROM YOU</div>
+<table class="lines">
+  <thead><tr><th>SRNO</th><th>ITEM DESCRIPTION</th><th>PART NO</th><th>MAKE</th><th>QTY</th><th>UOM</th><th>RATE USD</th><th>AMOUNT</th></tr></thead>
+  <tbody>${lineRows || '<tr><td colspan="8" class="c">No lines</td></tr>'}</tbody>
+  <tfoot><tr><td colspan="7" class="r">TOTAL AMOUNT USD</td><td class="r">${money(total)}</td></tr></tfoot>
+</table>
+
+<div class="bottom">
+  <table class="terms">
+    <tbody>
+      <tr><td class="n"></td><td class="head">TERMS &amp; CONDITION</td></tr>
+      ${DEFAULT_TERMS.map((t, i) => `<tr><td class="n">${i + 1}</td><td>${escHtml(t)}</td></tr>`).join('')}
+    </tbody>
+  </table>
+  <div class="sign">
+    <div class="for">For ${escHtml(DEFAULT_COMPANY.companyName)}</div>
+    ${stampSrc ? `<img src="${stampSrc}" alt="Stamp" />` : ''}
+    <div class="line">Authorized Signatory</div>
+  </div>
+</div>
+
+<div class="contact">
+  <div>If you have any questions about this price quote, please contact</div>
+  <div class="mail">info@kalikaindia.com</div>
+</div>
+</body></html>`
+  }
+
+  const downloadPdf = async () => {
     const d = detail
     if (!d || d.loading) return
-    const html = buildPoHtml(d)
+    const stamp = await loadStamp()
+    const html = (d.po_type || '').toLowerCase() === 'import' ? buildImportPoHtml(d, stamp) : buildPoHtml(d, stamp)
     const win = window.open('', '_blank', 'width=900,height=760')
     if (!win) { window.alert('Popup blocked — please allow popups to generate the PDF.'); return }
     win.document.write(html)
     win.document.close()
     win.focus()
-    setTimeout(() => win.print(), 350)
+    const doPrint = () => setTimeout(() => win.print(), 350)
+    if (win.document.readyState === 'complete') doPrint()
+    else { win.addEventListener('load', doPrint); setTimeout(doPrint, 1500) }
   }
 
   const downloadJpg = async () => {
     const d = detail
     if (!d || d.loading) return
-    const html = buildPoHtml(d)
+    const stamp = await loadStamp()
+    const html = (d.po_type || '').toLowerCase() === 'import' ? buildImportPoHtml(d, stamp) : buildPoHtml(d, stamp)
     const iframe = document.createElement('iframe')
     iframe.style.position = 'fixed'
     iframe.style.left = '-9999px'
@@ -366,13 +561,12 @@ export default function Purchases() {
     doc.write(html)
     doc.close()
 
-    await new Promise((resolve) => {
-      const img = doc.querySelector('.header img')
-      if (!img || img.complete) return resolve()
+    await Promise.all([...doc.images].map((img) => new Promise((resolve) => {
+      if (img.complete) return resolve()
       img.onload = resolve
       img.onerror = resolve
       setTimeout(resolve, 1000)
-    })
+    })))
 
     try {
       const canvas = await html2canvas(doc.body, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false })
@@ -628,6 +822,17 @@ export default function Purchases() {
             <button onClick={save} className="btn btn-primary">{form.id ? 'Save Changes' : 'Create PO'}</button>
           </>}>
           {error && <div className="mb-3 text-sm state-box bg-red-50 text-red-700 border border-red-200">{error}</div>}
+          <div className="mb-3 w-64">
+            <label className="block text-slate-500 text-xs mb-1">PO Type</label>
+            <select value={form.po_type || 'regular'} onChange={(e) => setForm({ ...form, po_type: e.target.value })} className="input">
+              <option value="regular">Regular PO</option>
+              <option value="import">Import PO</option>
+            </select>
+          </div>
+          {(form.po_type || 'regular') === 'import' ? (
+            <ImportPOForm form={form} setForm={setForm} />
+          ) : (
+            <>
           <div className="grid grid-cols-2 gap-3 text-sm mb-3">
             <div><label className="block text-slate-500 text-xs mb-1">PO Number *</label>
               <input value={form.po_number || ''} onChange={(e) => setForm({ ...form, po_number: e.target.value })} className="input" /></div>
@@ -723,6 +928,8 @@ export default function Purchases() {
               <div className="text-2xl font-bold text-slate-800">{fmtNum(form.lines.reduce((s, l) => s + (Number(l.amount) || 0), 0))}</div>
             </div>
           </div>
+            </>
+          )}
         </Modal>
       )}
     </div>

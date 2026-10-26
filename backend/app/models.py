@@ -382,12 +382,14 @@ class PurchaseOrder(Base):
     supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True, index=True)
     supplier_name: Mapped[str] = mapped_column(String(255), default="", index=True)
     order_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
+    valid_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     status: Mapped[PurchaseStatus] = mapped_column(
         Enum(PurchaseStatus), default=PurchaseStatus.ordered, index=True
     )
     total_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     notes: Mapped[str] = mapped_column(Text, default="")
     source_excel: Mapped[str] = mapped_column(String(255), default="")
+    po_type: Mapped[str] = mapped_column(String(20), default="regular")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     # Link to the PRN this PO fulfils (nullable; one PRN may map to several POs).
     # Plain integer reference (no FK) so the column is purely additive on
@@ -409,6 +411,7 @@ class PurchaseOrderLine(Base):
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
     description: Mapped[str] = mapped_column(Text, default="")
     item_code: Mapped[str] = mapped_column(String(120), default="", index=True)
+    make: Mapped[str] = mapped_column(String(120), default="")
     quantity: Mapped[float] = mapped_column(Float, default=0)
     received_qty: Mapped[float] = mapped_column(Float, default=0)
     rate: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)

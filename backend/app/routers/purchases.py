@@ -46,6 +46,7 @@ def _serialize_po(db: Session, po: PurchaseOrder) -> dict:
         lines.append({
             "id": ln.id, "product_id": ln.product_id, "description": ln.description,
             "item_code": ln.item_code or (ln.product.item_code if ln.product else ""),
+            "make": ln.make or "",
             "quantity": ln.quantity, "received_qty": ln.received_qty,
             "rate": float(ln.rate) if ln.rate is not None else None,
             "amount": float(ln.amount) if ln.amount is not None else None,
@@ -59,11 +60,12 @@ def _serialize_po(db: Session, po: PurchaseOrder) -> dict:
     return {
         "id": po.id, "po_number": po.po_number, "supplier_id": po.supplier_id,
         "supplier_name": po.supplier_name or "",
-        "order_date": po.order_date, "status": po.status.value,
+        "order_date": po.order_date, "valid_until": po.valid_until, "status": po.status.value,
         "total_amount": float(po.total_amount), "notes": po.notes,
         "created_at": po.created_at,
         "prn_id": po.prn_id,
         "prn_number": _prn_number(db, po.prn_id),
+        "po_type": getattr(po, "po_type", "regular") or "regular",
         "supplier": {"id": supplier.id, "name": supplier.name, "gstin": supplier.gstin or "",
                      "address": supplier.address or "", "phone": supplier.phone or "",
                      "email": supplier.email or ""}
@@ -244,8 +246,9 @@ def create_purchase(body: PurchaseOrderCreate, db: Annotated[Session, Depends(ge
         po_number=body.po_number,
         supplier_id=supplier.id if supplier else None,
         supplier_name=supplier.name if supplier else (body.supplier_name or "").strip(),
-        order_date=body.order_date, notes=body.notes,
+        order_date=body.order_date, valid_until=body.valid_until, notes=body.notes,
         prn_id=body.prn_id, idempotency_key=key or None,
+        po_type=getattr(body, "po_type", "regular") or "regular",
     )
     lines = [PurchaseOrderLine(**ln.model_dump()) for ln in body.lines]
     for ln in lines:
@@ -316,6 +319,8 @@ def update_purchase(po_id: int, body: PurchaseOrderUpdate, db: Annotated[Session
 
     apply_updates(po, body, exclude={"lines", "po_number", "supplier_id", "supplier_name",
                                      "supplier_gstin", "supplier_address", "supplier_phone", "supplier_email"})
+    if getattr(body, "po_type", None) is not None:
+        po.po_type = body.po_type or "regular"
     affected = {po.prn_id} if po.prn_id else set()
     if body.lines is not None:
         affected |= affected_prn_ids(db, list(po.lines))

@@ -297,6 +297,7 @@ class PurchaseOrderLineIn(BaseModel):
     product_id: Optional[int] = None
     description: str = ""
     item_code: str = ""
+    make: str = ""
     quantity: float = 0
     received_qty: float = 0
     rate: Optional[float] = None
@@ -316,11 +317,14 @@ class PurchaseOrderCreate(BaseModel):
     supplier_phone: str = ""
     supplier_email: str = ""
     order_date: date = Field(default_factory=date.today)
+    valid_until: Optional[date] = None
     status: PurchaseStatus = PurchaseStatus.ordered
     notes: str = ""
     lines: list[PurchaseOrderLineIn] = []
     prn_id: Optional[int] = None
     idempotency_key: str = Field(default="", max_length=80)
+    po_type: str = "regular"
+    import_meta: dict = {}
 
 
 class PurchaseOrderUpdate(BaseModel):
@@ -332,9 +336,12 @@ class PurchaseOrderUpdate(BaseModel):
     supplier_phone: Optional[str] = None
     supplier_email: Optional[str] = None
     order_date: Optional[date] = None
+    valid_until: Optional[date] = None
     status: Optional[PurchaseStatus] = None
     notes: Optional[str] = None
     lines: Optional[list[PurchaseOrderLineIn]] = None
+    po_type: Optional[str] = None
+    import_meta: Optional[dict] = None
 
 
 class PurchaseOrderLineOut(ORMModel):
@@ -342,6 +349,7 @@ class PurchaseOrderLineOut(ORMModel):
     product_id: Optional[int]
     description: str
     item_code: str = ""
+    make: str = ""
     quantity: float
     received_qty: float
     rate: Optional[float]
@@ -357,7 +365,9 @@ class PurchaseOrderOut(ORMModel):
     po_number: str
     supplier_id: Optional[int]
     order_date: date
+    valid_until: Optional[date] = None
     status: PurchaseStatus
+    po_type: str = "regular"
     total_amount: float
     notes: str
     created_at: datetime

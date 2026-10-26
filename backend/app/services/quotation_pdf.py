@@ -8,8 +8,6 @@ from __future__ import annotations
 import base64
 import io
 import logging
-import os
-import tempfile
 from pathlib import Path
 
 from PIL import Image as PILImage
@@ -22,9 +20,10 @@ from reportlab.platypus import (
     Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
-from ..assets.images import LOGO_PNG_B64, STAMP_PNG_B64
+from ..assets.images import LOGO_PNG_B64
 from ..config import BASE_DIR
 from ..models import Quotation
+from .gcs import get_stamp_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -346,20 +345,17 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
 
     # Authorized signatory block: stamp with text directly below it
     stamp_img = None
-    try:
-        fd, tmp_stamp_path = tempfile.mkstemp(suffix=".png")
-        with os.fdopen(fd, "wb") as tmp:
-            tmp.write(base64.b64decode(STAMP_PNG_B64))
-        stamp_img = Image(tmp_stamp_path, width=32 * mm, height=32 * mm)
-    except Exception as exc:
-        logger.warning("Failed to load embedded stamp: %s", exc)
-        stamp_path = _asset_path("assets/stamp.png")
-        if stamp_path:
-            try:
-                stamp_img = Image(str(stamp_path), width=32 * mm, height=32 * mm)
-            except Exception as exc2:
-                logger.warning("Failed to load stamp image for PDF: %s", exc2)
-                stamp_img = None
+    stamp_bytes = get_stamp_bytes()
+    if stamp_bytes:
+        try:
+            with PILImage.open(io.BytesIO(stamp_bytes)) as probe:
+                img_w, img_h = probe.size
+            # Fixed width, aspect-preserving height (never stretch the stamp).
+            stamp_w = 32 * mm
+            stamp_img = Image(io.BytesIO(stamp_bytes), width=stamp_w,
+                              height=stamp_w * img_h / img_w)
+        except Exception as exc:
+            logger.warning("Failed to load company stamp for PDF: %s", exc)
 
     signatory_inner = Table(
         [

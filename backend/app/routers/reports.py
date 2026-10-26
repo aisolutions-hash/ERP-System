@@ -20,6 +20,7 @@ from ..models import (
     ProductionOrder, PurchaseOrder, PurchaseOrderLine, Quotation, RawMaterialBalance, SalesOrder,
     SalesOrderLine, StockMovement, Supplier,
 )
+from ..services.gcs import get_stamp_bytes
 from ..services.quotation_pdf import build_quotation_pdf_bytes, _asset_path
 from datetime import date
 
@@ -27,6 +28,19 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 
 EXPORT_DIR = settings.report_dir
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@router.get("/stamp")
+def company_stamp(_: CurrentUser):
+    """Company stamp used by the browser-generated PO PDFs (cached client-side)."""
+    data = get_stamp_bytes()
+    if not data:
+        raise HTTPException(status_code=404, detail="Company stamp unavailable")
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @router.get("/debug/pdf-assets")

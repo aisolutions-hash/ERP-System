@@ -38,6 +38,9 @@ _COLUMN_MIGRATIONS = [
     ("sales_orders", "local_order_type", "VARCHAR(20) DEFAULT 'TRADING'"),
     ("sales_orders", "so_no", "VARCHAR(120)"),
     ("purchase_orders", "supplier_name", "VARCHAR(255)"),
+    ("purchase_orders", "po_type", "VARCHAR(20) DEFAULT 'regular'"),
+    ("purchase_orders", "valid_until", "DATE"),
+    ("purchase_order_lines", "make", "VARCHAR(120) DEFAULT ''"),
     ("purchase_order_lines", "item_code", "VARCHAR(120)"),
     ("stock_transfers", "customer_name", "VARCHAR(255)"),
     ("customer_dispatches", "customer_name", "VARCHAR(255)"),
@@ -106,6 +109,28 @@ def _ensure_columns() -> None:
             "         THEN ROUND(CAST(COALESCE(inward_qty, 0) / COALESCE(schedule_qty, 0) AS NUMERIC), 4) ELSE 0 END "
             "WHERE schedule_qty IS NOT NULL AND balance_qty IS NULL"
         ))
+
+
+def _ensure_product_legacy_defaults() -> None:
+    """Give legacy products columns a default so ORM inserts can omit them.
+
+    Some deployed databases carry extra NOT NULL columns (barcode, qr_data, …)
+    that the current Product model does not map. Without a default, creating a
+    product lazily (e.g. receiving an unmatched PO line) fails on INSERT.
+    Only existing columns are touched; fresh databases are unaffected.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        existing = {row[0] for row in conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'products'"
+        ))}
+        for column in ("barcode", "barcode_format", "qr_data", "weight_uom", "hsn_code"):
+            if column in existing:
+                conn.execute(text(
+                    f"ALTER TABLE products ALTER COLUMN {column} SET DEFAULT ''"
+                ))
 
 
 def _ensure_prn_po_indexes() -> None:
@@ -330,6 +355,11 @@ def on_startup():
         log.info("Column migrations applied.")
     except Exception as exc:
         log.error("column migration failed (recoverable): %s", exc)
+    # Legacy NOT NULL product columns must have defaults for lazy product creation.
+    try:
+        _ensure_product_legacy_defaults()
+    except Exception as exc:
+        log.error("product legacy default migration failed (recoverable): %s", exc)
     # Additive indexes + idempotency unique index for the PRN↔PO link.
     try:
         _ensure_prn_po_indexes()
