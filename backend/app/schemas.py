@@ -1214,6 +1214,7 @@ class QuotationBase(BaseModel):
     valid_until: Optional[date] = None
     approved_by: str = ""
     terms: str = ""
+    payment_days: Optional[int] = Field(default=None, ge=1)
     status: QuotationStatus = QuotationStatus.draft
     lines: list[QuotationLineIn] = []
 

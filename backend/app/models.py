@@ -1052,6 +1052,7 @@ class Quotation(Base):
     valid_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     approved_by: Mapped[str] = mapped_column(String(160), default="")
     terms: Mapped[str] = mapped_column(Text, default="")
+    payment_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Financial totals (stored to guarantee consistency across views/PDF/email)
     subtotal: Mapped[float] = mapped_column(Numeric(14, 2), default=0)

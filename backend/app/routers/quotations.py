@@ -142,12 +142,17 @@ def _apply_customer_defaults(quotation: Quotation, customer: Customer | None) ->
             quotation.customer_gstin = customer.gstin or ""
 
 
-DEFAULT_TERMS = (
-    "1. Customer will be billed after Confirm PO only\n"
-    "2. Payment will be 30 days to delivery of service and goods\n"
-    "3. Gst tax will be Extra\n"
-    "4. Delivery will be free of cost"
-)
+DEFAULT_PAYMENT_DAYS = 30
+
+
+def _default_terms(payment_days: int = DEFAULT_PAYMENT_DAYS) -> str:
+    """Standard terms; the payment period is driven by the selected value."""
+    return (
+        "1. Customer will be billed after Confirm PO only\n"
+        f"2. Payment will be {payment_days} days to delivery of service and goods\n"
+        "3. Gst tax will be Extra\n"
+        "4. Delivery will be free of cost"
+    )
 
 
 def _apply_company_defaults(quotation: Quotation) -> None:
@@ -356,6 +361,7 @@ def create_quotation(
 ):
     """Create a new quotation. Defaults to Draft."""
     customer = _resolve_customer(db, data)
+    payment_days = data.payment_days or DEFAULT_PAYMENT_DAYS
 
     q = Quotation(
         quotation_no=data.quotation_no or _next_quotation_no(db),
@@ -365,7 +371,8 @@ def create_quotation(
         quote_date=data.quote_date,
         valid_until=data.valid_until,
         approved_by=data.approved_by,
-        terms=data.terms or DEFAULT_TERMS,
+        terms=data.terms or _default_terms(payment_days),
+        payment_days=payment_days,
         created_by_id=user.id,
     )
 
@@ -449,6 +456,7 @@ def update_quotation(
             valid_until=data.valid_until,
             approved_by=data.approved_by,
             terms=data.terms,
+            payment_days=data.payment_days if data.payment_days is not None else q.payment_days,
             created_by_id=user.id,
         )
         for field in [
@@ -539,6 +547,7 @@ def duplicate_quotation(
         valid_until=q.valid_until,
         approved_by=q.approved_by,
         terms=q.terms,
+        payment_days=q.payment_days,
         created_by_id=user.id,
     )
     for ln in q.lines:
@@ -605,6 +614,7 @@ def revise_quotation(
         valid_until=q.valid_until,
         approved_by=q.approved_by,
         terms=q.terms,
+        payment_days=q.payment_days,
         created_by_id=user.id,
     )
     for ln in q.lines:

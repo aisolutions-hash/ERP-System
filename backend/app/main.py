@@ -88,6 +88,7 @@ _COLUMN_MIGRATIONS = [
     ("purchase_order_lines", "prn_line_id", "INTEGER"),
     ("prn_lines", "plant_id", "INTEGER"),
     ("sales_orders", "transport_name", "VARCHAR(160) DEFAULT ''"),
+    ("quotations", "payment_days", "INTEGER"),
 ]
 
 # Internal stock locations seeded as Plants (Main Store = plant_id NULL).
