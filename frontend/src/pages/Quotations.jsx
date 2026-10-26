@@ -54,10 +54,25 @@ const EMPTY_LINE = {
   amount: 0,
 }
 
-const DEFAULT_TERMS = `1. Customer will be billed after Confirm PO only
-2. Payment will be 30 days to delivery of service and goods
+const DEFAULT_PAYMENT_DAYS = 30
+
+const defaultTerms = (days = DEFAULT_PAYMENT_DAYS) => `1. Customer will be billed after Confirm PO only
+2. Payment will be ${days} days to delivery of service and goods
 3. Gst tax will be Extra
 4. Delivery will be free of cost`
+
+const PAYMENT_LINE_RE = /^.*Payment will be.*$/im
+
+function parsePaymentDays(terms) {
+  const m = String(terms || '').match(/Payment will be\s+(\d+)\s+days/i)
+  return m ? Number(m[1]) : null
+}
+
+function applyPaymentDays(terms, days) {
+  const line = `2. Payment will be ${days} days to delivery of service and goods`
+  const text = String(terms || '')
+  return PAYMENT_LINE_RE.test(text) ? text.replace(PAYMENT_LINE_RE, line) : `${text}\n${line}`
+}
 
 const EMPTY_FORM = {
   id: null,
@@ -78,7 +93,8 @@ const EMPTY_FORM = {
   quote_date: new Date().toISOString().split('T')[0],
   valid_until: '',
   approved_by: '',
-  terms: DEFAULT_TERMS,
+  terms: defaultTerms(DEFAULT_PAYMENT_DAYS),
+  payment_days: DEFAULT_PAYMENT_DAYS,
   lines: [{ ...EMPTY_LINE }],
 }
 
@@ -365,6 +381,7 @@ export default function Quotations() {
       company_name: normalizeCompanyName(q.company_name),
       quote_date: q.quote_date || EMPTY_FORM.quote_date,
       valid_until: q.valid_until || '',
+      payment_days: q.payment_days ?? parsePaymentDays(q.terms) ?? DEFAULT_PAYMENT_DAYS,
       lines: (q.lines || []).map((l) => ({
         ...EMPTY_LINE,
         ...l,
@@ -477,6 +494,7 @@ export default function Quotations() {
         valid_until: form.valid_until || null,
         approved_by: form.approved_by,
         terms: form.terms,
+        payment_days: form.payment_days === '' || form.payment_days == null ? null : Number(form.payment_days),
         status: forceStatus || form.status,
         lines: form.lines.map((ln) => ({
           product_id: ln.product_id || null,
@@ -867,11 +885,29 @@ export default function Quotations() {
             {/* Section E: Terms & Conditions */}
             <div>
               <SectionHeader title="E. Terms & Conditions" right={
-                <select value="" onChange={(e) => { const t = templates.find((x) => x.id === Number(e.target.value)); if (t) setForm((f) => ({ ...f, terms: t.content })); }} className="input text-xs py-1">
+                <select value="" onChange={(e) => {
+                  const t = templates.find((x) => x.id === Number(e.target.value))
+                  if (t) setForm((f) => ({ ...f, terms: t.content, payment_days: parsePaymentDays(t.content) ?? f.payment_days }))
+                }} className="input text-xs py-1">
                   <option value="">Load template…</option>
                   {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               } />
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <span className="text-xs text-slate-500">Payment Period (days)</span>
+                <input
+                  type="number" min="1" step="1"
+                  value={form.payment_days ?? ''}
+                  onChange={(e) => {
+                    const raw = e.target.value
+                    const days = raw === '' ? '' : Math.max(1, Math.floor(Number(raw)))
+                    setForm((f) => ({ ...f, payment_days: days, terms: days ? applyPaymentDays(f.terms, days) : f.terms }))
+                  }}
+                  placeholder="e.g. 30"
+                  className="input text-xs py-1 w-24"
+                />
+                <span className="text-xs text-slate-400">updates condition 2 automatically</span>
+              </div>
               <textarea value={form.terms} onChange={(e) => setForm({ ...form, terms: e.target.value })} className="input w-full h-32" placeholder="Enter terms & conditions…" />
             </div>
           </div>
