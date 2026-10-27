@@ -381,6 +381,11 @@ class PurchaseOrder(Base):
     po_number: Mapped[str] = mapped_column(String(120), index=True)
     supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True, index=True)
     supplier_name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    # Snapshot of manually entered Import PO supplier details. Import POs may
+    # use suppliers that do not exist in the master, so these stay on the PO
+    # and never create/update a Supplier record.
+    supplier_address: Mapped[str] = mapped_column(Text, default="")
+    supplier_email: Mapped[str] = mapped_column(String(160), default="")
     order_date: Mapped[date] = mapped_column(Date, index=True, default=date.today)
     valid_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     status: Mapped[PurchaseStatus] = mapped_column(

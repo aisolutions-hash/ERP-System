@@ -57,6 +57,25 @@ def _serialize_po(db: Session, po: PurchaseOrder) -> dict:
             "product": {"id": ln.product.id, "model": ln.product.model, "item_code": ln.product.item_code,
                         "category": ln.product.category.value} if ln.product else None,
         })
+    po_type = getattr(po, "po_type", "regular") or "regular"
+    if po_type.lower() == "import":
+        # Import POs keep their own supplier snapshot (manual entry is allowed),
+        # falling back to the linked master record for older records.
+        supplier_payload = None
+        if supplier or po.supplier_name or po.supplier_address or po.supplier_email:
+            supplier_payload = {
+                "id": supplier.id if supplier else None,
+                "name": po.supplier_name or (supplier.name if supplier else ""),
+                "gstin": (supplier.gstin or "") if supplier else "",
+                "address": po.supplier_address or (supplier.address if supplier else ""),
+                "phone": (supplier.phone or "") if supplier else "",
+                "email": po.supplier_email or (supplier.email if supplier else ""),
+            }
+    else:
+        supplier_payload = ({"id": supplier.id, "name": supplier.name, "gstin": supplier.gstin or "",
+                             "address": supplier.address or "", "phone": supplier.phone or "",
+                             "email": supplier.email or ""}
+                            if supplier else ({"name": po.supplier_name} if po.supplier_name else None))
     return {
         "id": po.id, "po_number": po.po_number, "supplier_id": po.supplier_id,
         "supplier_name": po.supplier_name or "",
@@ -65,11 +84,8 @@ def _serialize_po(db: Session, po: PurchaseOrder) -> dict:
         "created_at": po.created_at,
         "prn_id": po.prn_id,
         "prn_number": _prn_number(db, po.prn_id),
-        "po_type": getattr(po, "po_type", "regular") or "regular",
-        "supplier": {"id": supplier.id, "name": supplier.name, "gstin": supplier.gstin or "",
-                     "address": supplier.address or "", "phone": supplier.phone or "",
-                     "email": supplier.email or ""}
-        if supplier else ({"name": po.supplier_name} if po.supplier_name else None),
+        "po_type": po_type,
+        "supplier": supplier_payload,
         "lines": lines,
     }
 
@@ -228,12 +244,18 @@ def create_purchase(body: PurchaseOrderCreate, db: Annotated[Session, Depends(ge
             response.status_code = status.HTTP_200_OK
             return _serialize_po(db, existing)
 
+    po_type = (getattr(body, "po_type", "regular") or "regular").lower()
+    is_import = po_type == "import"
+
     supplier = None
     if body.supplier_id is not None:
         supplier = db.get(Supplier, body.supplier_id)
         if not supplier:
             raise HTTPException(status_code=400, detail=f"Supplier {body.supplier_id} not found")
-    if supplier is None and (body.supplier_name or body.supplier_gstin or body.supplier_phone or body.supplier_email):
+    # Regular POs keep promoting free-text suppliers into the master. Import POs
+    # never create or modify a Supplier record from manually entered details.
+    if (not is_import and supplier is None
+            and (body.supplier_name or body.supplier_gstin or body.supplier_phone or body.supplier_email)):
         supplier = get_or_create_supplier(
             db,
             name=body.supplier_name,
@@ -245,10 +267,15 @@ def create_purchase(body: PurchaseOrderCreate, db: Annotated[Session, Depends(ge
     po = PurchaseOrder(
         po_number=body.po_number,
         supplier_id=supplier.id if supplier else None,
-        supplier_name=supplier.name if supplier else (body.supplier_name or "").strip(),
+        supplier_name=((body.supplier_name or "").strip()
+                       or (supplier.name if supplier else "")),
+        supplier_address=((body.supplier_address or "").strip()
+                          or (supplier.address if supplier else "")) if is_import else "",
+        supplier_email=((body.supplier_email or "").strip()
+                        or (supplier.email if supplier else "")) if is_import else "",
         order_date=body.order_date, valid_until=body.valid_until, notes=body.notes,
         prn_id=body.prn_id, idempotency_key=key or None,
-        po_type=getattr(body, "po_type", "regular") or "regular",
+        po_type=po_type,
     )
     lines = [PurchaseOrderLine(**ln.model_dump()) for ln in body.lines]
     for ln in lines:
@@ -298,29 +325,49 @@ def update_purchase(po_id: int, body: PurchaseOrderUpdate, db: Annotated[Session
     if body.po_number is not None and body.po_number != po.po_number:
         po.po_number = body.po_number
 
+    target_type = (body.po_type if body.po_type is not None else (po.po_type or "regular")).lower()
+    is_import = target_type == "import"
+
     # Resolve supplier first so free-text supplier details can create/link a master record.
     supplier = None
     if body.supplier_id is not None:
         supplier = db.get(Supplier, body.supplier_id)
         if not supplier:
             raise HTTPException(status_code=400, detail=f"Supplier {body.supplier_id} not found")
-    if supplier is None and (body.supplier_name or body.supplier_gstin or body.supplier_phone or body.supplier_email):
-        supplier = get_or_create_supplier(
-            db,
-            name=body.supplier_name,
-            gstin=body.supplier_gstin,
-            address=body.supplier_address,
-            phone=body.supplier_phone,
-            email=body.supplier_email,
-        )
-    if supplier is not None:
-        po.supplier_id = supplier.id
-        po.supplier_name = supplier.name
+    if not is_import:
+        if supplier is None and (body.supplier_name or body.supplier_gstin or body.supplier_phone or body.supplier_email):
+            supplier = get_or_create_supplier(
+                db,
+                name=body.supplier_name,
+                gstin=body.supplier_gstin,
+                address=body.supplier_address,
+                phone=body.supplier_phone,
+                email=body.supplier_email,
+            )
+        if supplier is not None:
+            po.supplier_id = supplier.id
+            po.supplier_name = supplier.name
+    else:
+        # Import POs keep edited/manual supplier details on the PO only.
+        if supplier is not None:
+            po.supplier_id = supplier.id
+            po.supplier_name = (body.supplier_name or "").strip() or supplier.name
+            po.supplier_address = (body.supplier_address or "").strip() or supplier.address or ""
+            po.supplier_email = (body.supplier_email or "").strip() or supplier.email or ""
+        else:
+            if "supplier_id" in body.model_fields_set:
+                po.supplier_id = None
+            if body.supplier_name is not None:
+                po.supplier_name = body.supplier_name.strip()
+            if body.supplier_address is not None:
+                po.supplier_address = body.supplier_address.strip()
+            if body.supplier_email is not None:
+                po.supplier_email = body.supplier_email.strip()
 
     apply_updates(po, body, exclude={"lines", "po_number", "supplier_id", "supplier_name",
                                      "supplier_gstin", "supplier_address", "supplier_phone", "supplier_email"})
-    if getattr(body, "po_type", None) is not None:
-        po.po_type = body.po_type or "regular"
+    if body.po_type is not None:
+        po.po_type = target_type
     affected = {po.prn_id} if po.prn_id else set()
     if body.lines is not None:
         affected |= affected_prn_ids(db, list(po.lines))

@@ -15,6 +15,9 @@ const statusCls = {
   Cancelled: 'bg-red-100 text-red-600',
 }
 const statuses = ['Draft', 'Ordered', 'Partially Received', 'Received', 'Cancelled']
+const isImportType = (t) => (t || '').toLowerCase() === 'import'
+const poTypeLabel = (t) => (isImportType(t) ? 'Import PO' : 'Regular PO')
+const poTypeCls = (t) => (isImportType(t) ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-600')
 
 const makeKey = () => (typeof crypto !== 'undefined' && crypto.randomUUID
   ? crypto.randomUUID()
@@ -53,6 +56,8 @@ export default function Purchases() {
   const [importResult, setImportResult] = useState(null)
   const [importBusy, setImportBusy] = useState(false)
   const [suppliers, setSuppliers] = useState([])
+  const [suppliersLoading, setSuppliersLoading] = useState(true)
+  const [suppliersError, setSuppliersError] = useState('')
   const [products, setProducts] = useState([])
   const [form, setForm] = useState({ lines: [] })
   const [error, setError] = useState(null)
@@ -138,7 +143,11 @@ export default function Purchases() {
   }, [])
 
   useEffect(() => {
-    loadAllSuppliers().then(setSuppliers).catch(() => {})
+    setSuppliersLoading(true); setSuppliersError('')
+    loadAllSuppliers()
+      .then(setSuppliers)
+      .catch(() => { setSuppliers([]); setSuppliersError('Supplier API unavailable') })
+      .finally(() => setSuppliersLoading(false))
     api.get('/products', { params: { page_size: 500 } }).then((r) => setProducts(r.data.items || [])).catch(() => {})
   }, [loadAllSuppliers])
 
@@ -170,9 +179,9 @@ export default function Purchases() {
       id: po.id, po_number: po.po_number, supplier_id: po.supplier_id ?? '',
       supplier_name: po.supplier?.name || po.supplier_name || '',
       supplier_gstin: po.supplier?.gstin || '',
-      supplier_address: po.supplier?.address || '',
+      supplier_address: po.supplier?.address || po.supplier_address || '',
       supplier_phone: po.supplier?.phone || '',
-      supplier_email: po.supplier?.email || '',
+      supplier_email: po.supplier?.email || po.supplier_email || '',
       order_date: po.order_date, status: po.status, notes: po.notes || '',
       prn_id: po.prn_id || null,
       po_type: po.po_type || 'regular',
@@ -181,10 +190,10 @@ export default function Purchases() {
       import_date: po.order_date || '',
       import_customer_id: '167428',
       import_valid_until: po.valid_until || '',
-      import_supplier_name: po.import_supplier_name || '',
-      import_supplier_addr1: po.import_supplier_addr1 || '',
-      import_supplier_addr2: po.import_supplier_addr2 || '',
-      import_supplier_email: po.import_supplier_email || '',
+      import_supplier_name: po.supplier?.name || po.supplier_name || '',
+      import_supplier_addr1: po.supplier?.address || po.supplier_address || '',
+      import_supplier_addr2: '',
+      import_supplier_email: po.supplier?.email || po.supplier_email || '',
     })
     setError(null); setShowForm(true)
   }
@@ -257,12 +266,12 @@ export default function Purchases() {
     }
     const payload = {
       po_number: String(form.po_number || '').trim(),
-      supplier_id: isImport ? null : (form.supplier_id ? Number(form.supplier_id) : null),
-      supplier_name: isImport ? (form.import_supplier_name || '') : (form.supplier_name || '').trim(),
+      supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
+      supplier_name: isImport ? (form.import_supplier_name || '').trim() : (form.supplier_name || '').trim(),
       supplier_gstin: (form.supplier_gstin || '').trim(),
       supplier_address: isImport ? ([form.import_supplier_addr1, form.import_supplier_addr2].filter(Boolean).join(' ').trim()) : (form.supplier_address || '').trim(),
       supplier_phone: (form.supplier_phone || '').trim(),
-      supplier_email: isImport ? (form.import_supplier_email || '') : (form.supplier_email || '').trim(),
+      supplier_email: isImport ? (form.import_supplier_email || '').trim() : (form.supplier_email || '').trim(),
       order_date: (form.order_date && form.order_date.trim()) ? form.order_date : new Date().toISOString().slice(0, 10), status: form.status || 'Ordered', notes: form.notes || '',
       valid_until: form.import_valid_until || null,
       po_type: form.po_type || 'regular',
@@ -594,6 +603,7 @@ export default function Purchases() {
 
   const columns = [
     { key: 'po_number', label: 'PO No', render: (r) => <span className="font-mono text-xs font-medium">{r.po_number}</span> },
+    { key: 'po_type', label: 'PO Type', render: (r) => <Badge className={poTypeCls(r.po_type)}>{poTypeLabel(r.po_type)}</Badge> },
     { key: 'supplier', label: 'Supplier', render: (r) => <span className="font-medium">{r.supplier?.name || '—'}</span> },
     { key: 'order_date', label: 'Order Date' },
     { key: 'status', label: 'Status', render: (r) => <Badge className={statusCls[r.status]}>{r.status}</Badge> },
@@ -674,6 +684,7 @@ export default function Purchases() {
             <div className="max-h-[70vh] overflow-y-auto pr-1">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4 text-sm">
                 <div><span className="text-slate-500 block text-xs">PO Number</span><span className="font-medium">{detail.po_number}</span></div>
+                <div><span className="text-slate-500 block text-xs">PO Type</span><Badge className={poTypeCls(detail.po_type)}>{poTypeLabel(detail.po_type)}</Badge></div>
                 <div><span className="text-slate-500 block text-xs">Supplier</span><span className="font-medium">{detail.supplier?.name || detail.supplier_name || '—'}</span></div>
                 <div><span className="text-slate-500 block text-xs">GST No.</span><span className="font-medium">{detail.supplier?.gstin || '—'}</span></div>
                 <div><span className="text-slate-500 block text-xs">Mobile</span><span className="font-medium">{detail.supplier?.phone || '—'}</span></div>
@@ -830,7 +841,8 @@ export default function Purchases() {
             </select>
           </div>
           {(form.po_type || 'regular') === 'import' ? (
-            <ImportPOForm form={form} setForm={setForm} />
+            <ImportPOForm form={form} setForm={setForm} suppliers={suppliers}
+              suppliersLoading={suppliersLoading} suppliersError={suppliersError} />
           ) : (
             <>
           <div className="grid grid-cols-2 gap-3 text-sm mb-3">

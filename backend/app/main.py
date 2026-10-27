@@ -38,6 +38,8 @@ _COLUMN_MIGRATIONS = [
     ("sales_orders", "local_order_type", "VARCHAR(20) DEFAULT 'TRADING'"),
     ("sales_orders", "so_no", "VARCHAR(120)"),
     ("purchase_orders", "supplier_name", "VARCHAR(255)"),
+    ("purchase_orders", "supplier_address", "TEXT DEFAULT ''"),
+    ("purchase_orders", "supplier_email", "VARCHAR(160) DEFAULT ''"),
     ("purchase_orders", "po_type", "VARCHAR(20) DEFAULT 'regular'"),
     ("purchase_orders", "valid_until", "DATE"),
     ("purchase_order_lines", "make", "VARCHAR(120) DEFAULT ''"),

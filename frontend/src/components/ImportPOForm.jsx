@@ -1,13 +1,24 @@
 import { Plus } from 'lucide-react'
 import { fmtNum } from '../lib/format'
+import { SearchSelect } from './ui'
 
 export const DEFAULT_TERMS = ['PICKUP WITHIN 7 DAYS AFTER RECEIPT OF PAYMENT','PAYMENT 100% AGAINST PI','DHL ACCOUNT NO.969265540','PAYMENT WILL BE DONE VIA WIRE TRANSFER AS PER PI','WIRE TRANSFER FEE AS PER PI']
 export const DEFAULT_COMPANY = {companyName:'KALIKA ENTERPRISES',address1:'PLOT NO M-59,MIDC,AHMEDNAGAR',website:'Website: www.kalikaindia.com',phone:'Phone:+91 9405536016',approvedBy:'Approved By: [Mr.  Vishal Kumbharkar ]'}
-const DEFAULT_SUPPLIER = {name:'',addr1:'',addr2:'',email:''}
 export const DEFAULT_BILLING = {invoiceInFavor:'KALIKA ENTERPRISES',billingShipping1:'PLOT NO M-59,MIDC',billingShipping2:'AHMEDNAGAR,',zipCode:'414111',country:'INDIA'}
 
-export default function ImportPOForm({ form, setForm }){
+export default function ImportPOForm({ form, setForm, suppliers = [], suppliersLoading = false, suppliersError = '' }){
   const yellow = (e='')=> 'bg-yellow-50 border-yellow-200 '+e
+  const pickSupplier = (id, manual) => {
+    const s = id ? suppliers.find((ss) => String(ss.id) === String(id)) : null
+    setForm({
+      ...form,
+      supplier_id: id || '',
+      import_supplier_name: s ? (s.name || s.company || '') : (manual || ''),
+      import_supplier_addr1: s ? (s.address || '') : '',
+      import_supplier_addr2: '',
+      import_supplier_email: s ? (s.email || '') : '',
+    })
+  }
   const calc=(ln)=>{const q=Number(ln.quantity||0);const r=Number(ln.rate_usd||ln.rate||0);return q*r}
   const setLine=(i,k,v)=>{const lines=[...(form.import_lines||form.lines||[])];lines[i]={...lines[i],[k]:v};if(k==='quantity'||k==='rate_usd'||k==='rate'){lines[i].amount=calc(lines[i])};setForm({...form,import_lines:lines,lines})}
   const addLine=()=>{const lines=[...(form.import_lines||form.lines||[])];lines.push({srno:lines.length+1,item_description:'',part_no:'',make:'',quantity:'',uom:'Nos',rate_usd:'',amount:''});setForm({...form,import_lines:lines,lines})}
@@ -27,10 +38,23 @@ export default function ImportPOForm({ form, setForm }){
         </div>
           <div className='border p-2 rounded mt-2 space-y-1'>
             <div className='text-xs text-slate-500 uppercase'>Supplier</div>
-            <input className={'input text-xs'} value={form.import_supplier_name ?? DEFAULT_SUPPLIER.name} onChange={(e)=>setForm({...form,import_supplier_name:e.target.value})} placeholder='Supplier Name' />
-            <input className={'input text-xs'} value={form.import_supplier_addr1 ?? DEFAULT_SUPPLIER.addr1} onChange={(e)=>setForm({...form,import_supplier_addr1:e.target.value})} placeholder='Supplier Address' />
-            <input className={'input text-xs'} value={form.import_supplier_addr2 ?? DEFAULT_SUPPLIER.addr2} onChange={(e)=>setForm({...form,import_supplier_addr2:e.target.value})} placeholder='' />
-            <input className={'input text-xs'} value={form.import_supplier_email ?? DEFAULT_SUPPLIER.email} onChange={(e)=>setForm({...form,import_supplier_email:e.target.value})} placeholder='Supplier Email' />
+            <SearchSelect
+              options={suppliers.map((s) => ({ id: s.id, label: s.name || s.company || `Supplier ${s.id}` }))}
+              value={form.supplier_id || null}
+              initialLabel={!form.supplier_id ? (form.import_supplier_name || '') : ''}
+              placeholder='Search suppliers or type a new name'
+              className='input text-xs'
+              onChange={pickSupplier}
+            />
+            {suppliersLoading && <div className='text-[10px] text-slate-400'>Loading suppliers…</div>}
+            {suppliersError && <div className='text-[10px] text-red-600'>Could not load suppliers. You can still enter details manually.</div>}
+            {!suppliersLoading && !suppliersError && suppliers.length === 0 && (
+              <div className='text-[10px] text-slate-400'>No existing suppliers found. Enter details manually.</div>
+            )}
+            <input className={'input text-xs'} value={form.import_supplier_name || ''} onChange={(e)=>setForm({...form,supplier_id:'',import_supplier_name:e.target.value})} placeholder='Supplier Name' />
+            <input className={'input text-xs'} value={form.import_supplier_addr1 || ''} onChange={(e)=>setForm({...form,import_supplier_addr1:e.target.value})} placeholder='Supplier Address' />
+            <input className={'input text-xs'} value={form.import_supplier_addr2 || ''} onChange={(e)=>setForm({...form,import_supplier_addr2:e.target.value})} placeholder='Address Line 2' />
+            <input className={'input text-xs'} value={form.import_supplier_email || ''} onChange={(e)=>setForm({...form,import_supplier_email:e.target.value})} placeholder='Supplier Email' />
           </div>
       </div>
       <div className='col-span-6'>
