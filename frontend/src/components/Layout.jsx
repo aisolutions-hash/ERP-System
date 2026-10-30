@@ -5,7 +5,7 @@ import {
   Truck, Users, Package, FileDown, ShieldCheck, LogOut, ListChecks,
   AlertTriangle, Store, BellRing, ClipboardList, GitBranch, LayoutGrid,
   ChevronsLeft, ChevronsRight, Menu, X, Layers, ArrowLeftRight, FileSpreadsheet, PackagePlus,
-  FileText, Briefcase, ClipboardCheck,
+  FileText, Briefcase, ClipboardCheck, History,
 } from 'lucide-react'
 import api from '../lib/api'
 import { useAuth } from '../context/AuthContext'
@@ -98,6 +98,7 @@ const TITLE_MAP = {
   '/employees': { title: 'Employee Management', sub: 'HR & Payroll Department' },
   '/reports': { title: 'Reports', sub: 'Business summaries & exports' },
   '/users': { title: 'Users', sub: 'User administration' },
+  '/activity-log': { title: 'Activity Log', sub: 'Data change history & daily summary' },
 }
 
 export default function Layout() {
@@ -160,14 +161,21 @@ export default function Layout() {
           ))}
         </div>
       ))}
-      {user?.role === 'admin' && (
+      {(user?.role === 'admin' || user?.role === 'manager') && (
         <div className="mt-2">
           <div className={`sidebar-group-label ${collapsed ? 'sr-only' : ''}`}>Administration</div>
-          <NavLink to="/users" title={collapsed ? 'Users' : undefined}
+          <NavLink to="/activity-log" title={collapsed ? 'Activity Log' : undefined}
             className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
-            <span className="icon-holder"><ShieldCheck size={17} /></span>
-            <span className={collapsed ? 'sr-only' : 'flex-1 text-left truncate'}>Users</span>
+            <span className="icon-holder"><History size={17} /></span>
+            <span className={collapsed ? 'sr-only' : 'flex-1 text-left truncate'}>Activity Log</span>
           </NavLink>
+          {user?.role === 'admin' && (
+            <NavLink to="/users" title={collapsed ? 'Users' : undefined}
+              className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
+              <span className="icon-holder"><ShieldCheck size={17} /></span>
+              <span className={collapsed ? 'sr-only' : 'flex-1 text-left truncate'}>Users</span>
+            </NavLink>
+          )}
         </div>
       )}
     </nav>

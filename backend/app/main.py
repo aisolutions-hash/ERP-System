@@ -17,7 +17,7 @@ from .routers import (
     purchases, inventory, production, orders, dispatch, plans, dashboard, reports,
     requirements, salespersons, local_orders, bom, alerts,
     material_requirements, fulfilment, stock_flow, quotations, packaging_lists,
-    employees, prns,
+    employees, prns, activity_log,
 )
 
 # Schema additions create_all cannot apply to pre-existing tables (idempotent ALTER).
@@ -89,8 +89,16 @@ _COLUMN_MIGRATIONS = [
     ("purchase_orders", "idempotency_key", "VARCHAR(80)"),
     ("purchase_order_lines", "prn_line_id", "INTEGER"),
     ("prn_lines", "plant_id", "INTEGER"),
+    ("prns", "prn_type", "VARCHAR(20) DEFAULT 'DIRECT'"),
+    ("prns", "issued_by_id", "INTEGER"),
+    ("prns", "issued_by_name", "VARCHAR(160) DEFAULT ''"),
+    ("prns", "issued_at", "TIMESTAMP"),
     ("sales_orders", "transport_name", "VARCHAR(160) DEFAULT ''"),
     ("quotations", "payment_days", "INTEGER"),
+    ("audit_logs", "changes", "TEXT DEFAULT ''"),
+    ("audit_logs", "created_count", "INTEGER DEFAULT 0"),
+    ("audit_logs", "updated_count", "INTEGER DEFAULT 0"),
+    ("audit_logs", "failed_count", "INTEGER DEFAULT 0"),
 ]
 
 # Internal stock locations seeded as Plants (Main Store = plant_id NULL).
@@ -458,6 +466,7 @@ app.include_router(stock_flow.dispatch_router)
 app.include_router(packaging_lists.router)
 app.include_router(employees.router)
 app.include_router(prns.router)
+app.include_router(activity_log.router)
 
 
 # Serve the built React app in production mode (frontend/dist mounted next to backend).

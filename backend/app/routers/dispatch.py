@@ -954,7 +954,7 @@ def local_order_dispatch(
         items.append(s)
     db.commit()
 
-    return {"items": items, "total": len(items), "page": page, "page_size": page_size}
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/{dispatch_id}", response_model=dict)
@@ -976,7 +976,7 @@ def update_dispatch(dispatch_id: int, body: DispatchUpdate, db: Annotated[Sessio
     for l in d.lines:
         if l.product_id is not None:
             old_per_product[l.product_id] = old_per_product.get(l.product_id, 0.0) + float(l.quantity or 0)
-    apply_updates(d, body, exclude={"lines", "customer_name"})
+    changes = apply_updates(d, body, exclude={"lines", "customer_name"})
     if body.lines is not None:
         db.query(DispatchLine).filter(DispatchLine.dispatch_id == d.id).delete()
         d.lines = _resolve_dispatch_lines(db, body.lines)
@@ -1001,6 +1001,7 @@ def update_dispatch(dispatch_id: int, body: DispatchUpdate, db: Annotated[Sessio
     db.refresh(d)
     _sync_sales_order(db, d)
     db.commit()
-    write_audit(db, user, "UPDATE", "dispatches", d.id, f"Updated dispatch {d.dispatch_no}")
+    write_audit(db, user, "UPDATE", "dispatches", d.id, f"Updated dispatch {d.dispatch_no}",
+                changes=changes)
     sync_purchase_shortages(db)
     return _serialize_dispatch(db, d)

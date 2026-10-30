@@ -68,8 +68,8 @@ export default function PrnEditorModal({ editor, setEditor, meta, departments, m
   const addLine = () => setEditor((e) => ({ ...e, prn: { ...e.prn, lines: [...e.prn.lines, emptyLine()] } }))
   const removeLine = (key) => setEditor((e) => ({ ...e, prn: { ...e.prn, lines: e.prn.lines.filter((l) => l._key !== key) } }))
 
-  // Per-line lookup sequence: bumped on every Item Code change so a slow
-  // in-flight response for a previous code can never overwrite the current one.
+// Per-line lookup sequence: bumped on every material change so a slow
+  // in-flight response for a previous selection can never overwrite the current one.
   const seqRef = useRef({})
 
   const stockFor = async (key, id, qty, plantId = null) => {
@@ -165,6 +165,41 @@ export default function PrnEditorModal({ editor, setEditor, meta, departments, m
     } catch { /* left as manual */ }
   }
 
+  const onMaterialDesc = (key, value) => {
+    seqRef.current[key] = (seqRef.current[key] ?? 0) + 1
+    if (!value.trim()) {
+      setLine(key, { material_id: null, entry_mode: 'MANUAL', material_code: '',
+        description: '', uom: '', _uomTouched: false,
+        available_stock: null, reserved_stock: null, incoming_qty: null, suggested_qty: null })
+      return
+    }
+    const m = findLocal(value)
+    if (m) applyMaterial(key, m)
+    else setLine(key, { material_id: null, entry_mode: 'MANUAL', material_code: '',
+      description: value, uom: '', _uomTouched: false,
+      available_stock: null, reserved_stock: null, incoming_qty: null, suggested_qty: null })
+  }
+
+  const resolveMaterialDesc = async (key, value) => {
+    if (!value.trim()) return
+    const local = findLocal(value)
+    if (local) {
+      const line = prn.lines.find((l) => l._key === key)
+      if (line?.material_id !== local.id) applyMaterial(key, local)
+      return
+    }
+    const v = value.trim().toLowerCase()
+    if (v.length < 2) return
+    const seq = seqRef.current[key] ?? 0
+    try {
+      const { data } = await api.get('/prn/materials', { params: { search: value, limit: 20 } })
+      if (seqRef.current[key] !== seq) return // stale — code changed meanwhile
+      const m = (data || []).find((x) => (x.item_code || '').toLowerCase() === v
+        || (x.model || '').toLowerCase() === v || (x.name || '').toLowerCase() === v)
+      if (m) applyMaterial(key, m)
+    } catch { /* left as manual */ }
+  }
+
   const uploadFor = async (lineId, file) => {
     const fd = new FormData()
     fd.append('file', file)
@@ -172,7 +207,7 @@ export default function PrnEditorModal({ editor, setEditor, meta, departments, m
       await api.post(`/prn/${prn.id}/lines/${lineId}/attachment`, fd)
       const { data } = await api.get(`/prn/${prn.id}`)
       set({ lines: (data.lines || []).map(lineFromApi) })
-    } catch (err) { alert('Upload failed: ' + (err.response?.data?.detail || err.message)) }
+    } catch (err) { setError('Upload failed: ' + (err.response?.data?.detail || err.message)) }
   }
 
   const payload = () => ({
@@ -293,8 +328,18 @@ export default function PrnEditorModal({ editor, setEditor, meta, departments, m
                     placeholder="Code or new item" className="input text-xs py-1 px-2 w-full font-mono" />
                 </td>
                 <td>
+                  <div className="flex items-center gap-1">
+                    <label className="text-slate-600 text-xs pr-1">Desc:</label>
+                    <input list="prn-mat-desc" value={l.description}
+                      onChange={(e) => onMaterialDesc(l._key, e.target.value)}
+                      onBlur={(e) => resolveMaterialDesc(l._key, e.target.value)}
+                      placeholder="Search material name" className="input text-xs py-1 px-2 w-full flex-1" />
+                    <datalist id="prn-mat-desc">
+                      {materials.map((m) => <option key={m.id} value={m.name || m.model} label={m.name || m.model}>{m.name || m.model}</option>)}
+                    </datalist>
+                  </div>
                   <input value={l.description} onChange={(e) => setLine(l._key, { description: e.target.value })}
-                    placeholder={l.material_id ? '' : 'Describe material (Manual Entry – Item Master Review Required)'} className="input text-xs py-1 px-2 w-full" />
+                    placeholder={l.material_id ? '' : 'Describe material (Manual Entry – Item Master Review Required)'} className="input text-xs py-1 px-2 w-full hidden" />
                 </td>
                 <td><input value={l.specification} onChange={(e) => setLine(l._key, { specification: e.target.value })} className="input text-xs py-1 px-2 w-32" /></td>
                 <td>

@@ -1,14 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { RefreshCw, Plus, ClipboardList, CheckCircle2, AlertTriangle } from 'lucide-react'
 import api from '../lib/api'
 import { useAuth } from '../context/AuthContext'
 import { PageHeader, Card, Loading, Empty, Badge, StatCard } from '../components/ui'
 import Table from '../components/Table'
 import PrnEditorModal, { newPrnDraft } from '../components/PrnEditorModal'
+import { PrnDetailModal } from './PrnDetail'
 
 export default function PRN() {
-  const navigate = useNavigate()
   const { user } = useAuth()
 
   const [rows, setRows] = useState([])
@@ -22,6 +21,7 @@ export default function PRN() {
   const [filters, setFilters] = useState({ search: '', department: '', priority: '' })
 
   const [editor, setEditor] = useState(null) // { mode, prn } or null
+  const [detailId, setDetailId] = useState(null)
 
   const load = () => {
     setLoading(true)
@@ -48,8 +48,8 @@ export default function PRN() {
 
   const openNew = () => setEditor({ mode: 'new', prn: newPrnDraft(user) })
 
-  // The whole row opens the PRN detail page. No row-level action buttons.
-  const openRow = (r) => navigate(`/prn/${r.id}`)
+  // The whole row opens the PRN details modal. No row-level action buttons.
+  const openRow = (r) => setDetailId(r.id)
 
   const cols = [
     { key: 'prn_number', label: 'PRN No.', render: (r) => <span className="font-mono text-xs font-semibold">{r.prn_number}</span> },
@@ -101,6 +101,14 @@ export default function PRN() {
       {editor && (
         <PrnEditorModal editor={editor} setEditor={setEditor} meta={meta} departments={departments}
           materials={materials} locations={locations} currentUser={user} onSaved={() => { setEditor(null); load() }} />
+      )}
+
+      {detailId && (
+        <PrnDetailModal prnId={detailId} currentUser={user}
+          lookups={{ meta, departments, materials, locations }}
+          onClose={() => setDetailId(null)}
+          onChanged={load}
+          onDeleted={load} />
       )}
     </div>
   )

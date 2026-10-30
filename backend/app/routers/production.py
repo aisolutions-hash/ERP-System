@@ -362,13 +362,14 @@ def update_production(order_id: int, body: ProductionOrderUpdate,
         c = get_or_create_customer(db, body.customer_name)
         if c:
             o.customer_id = c.id
-    apply_updates(o, body, exclude={"produced_qty", "customer_name"})
+    changes = apply_updates(o, body, exclude={"produced_qty", "customer_name"})
     o.produced_qty = sum(float(m.quantity or 0) for m in o.movements)
     _recalc_status(o)
     _sync_completed_to_local_order(db, o)
     db.commit()
     db.refresh(o)
-    write_audit(db, user, "UPDATE", "production_orders", o.id, f"Updated production order {o.order_no}")
+    write_audit(db, user, "UPDATE", "production_orders", o.id, f"Updated production order {o.order_no}",
+                changes=changes)
     return _serialize_po(db, o)
 
 
@@ -816,6 +817,10 @@ async def import_production_plans(
     for o in created:
         write_audit(db, user, "CREATE", "production_orders", o.id,
                     f"Imported production plan {o.order_no}")
+    if error_rows:
+        write_audit(db, user, "IMPORT", "production_orders", None,
+                    f"Production import: {len(created)} created, {len(error_rows)} failed",
+                    failed=len(error_rows))
 
     return {
         "created": len(created),

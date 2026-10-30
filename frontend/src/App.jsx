@@ -26,6 +26,7 @@ import Users from './pages/Users'
 import StockMovements from './pages/StockMovements'
 import PackagingList from './pages/PackagingList'
 import Employees from './pages/Employees'
+import ActivityLog from './pages/ActivityLog'
 
 function RequireAuth({ children }) {
   const { user } = useAuth()
@@ -71,6 +72,7 @@ function App() {
             <Route path="employees" element={<Employees />} />
             <Route path="reports" element={<Reports />} />
             <Route path="users" element={<Users />} />
+            <Route path="activity-log" element={<ActivityLog />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

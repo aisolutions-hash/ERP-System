@@ -1,6 +1,7 @@
 """Quotations API - Sales department pre-order documents."""
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Annotated, Any
 
@@ -28,6 +29,7 @@ from ..services.customers import get_or_create_customer
 from ..services.email_service import is_valid_email, mail_config_ok, send_email
 from ..services.quotation_pdf import build_quotation_pdf_bytes
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/quotations", tags=["quotations"])
 
 
@@ -334,7 +336,7 @@ def update_terms_template(
     if data.is_default:
         for t in db.scalars(select(TermsTemplate).where(TermsTemplate.is_default == True)).all():
             t.is_default = False
-    apply_updates(tmpl, data.model_dump(exclude_unset=True))
+    apply_updates(tmpl, data)
     db.commit()
     db.refresh(tmpl)
     return TermsTemplateOut.model_validate(tmpl).model_dump()
@@ -482,7 +484,7 @@ def update_quotation(
         return QuotationOut.model_validate(new_q).model_dump()
 
     # Draft / Rejected / Expired: update in place.
-    apply_updates(q, data, exclude={"lines"})
+    changes = apply_updates(q, data, exclude={"lines"})
 
     customer = _resolve_customer(db, data)
     _apply_customer_defaults(q, customer)
@@ -499,7 +501,7 @@ def update_quotation(
         raise HTTPException(status_code=400, detail=f"Database error: {exc.orig}")
     db.refresh(q)
     write_audit(db, user, "UPDATE", "quotation", q.id,
-                f"Updated {q.quotation_no} Rev. {q.revision}")
+                f"Updated {q.quotation_no} Rev. {q.revision}", changes=changes)
     return QuotationOut.model_validate(q).model_dump()
 
 
@@ -661,7 +663,8 @@ def change_status(
     db.commit()
     db.refresh(q)
     write_audit(db, user, "STATUS", "quotation", q.id,
-                f"Status changed from {old} to {q.status.value}")
+                f"Status changed from {old} to {q.status.value}",
+                changes={"status": {"old": old, "new": q.status.value}})
     return QuotationOut.model_validate(q).model_dump()
 
 

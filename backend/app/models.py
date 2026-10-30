@@ -10,7 +10,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger, Boolean, Date, DateTime, Enum, Float, ForeignKey, Index,
-    Integer, Numeric, String, Text, UniqueConstraint,
+    Integer, Numeric, String, Text, UniqueConstraint, event,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -938,14 +938,23 @@ class Alert(Base):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(60), index=True)
     entity: Mapped[str] = mapped_column(String(120), index=True)
     entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     details: Mapped[str] = mapped_column(Text, default="")
     ip: Mapped[str] = mapped_column(String(60), default="")
+    changes: Mapped[str] = mapped_column(Text, default="")
+    created_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+@event.listens_for(AuditLog, "before_update")
+def _audit_log_immutable(mapper, connection, target):
+    raise ValueError("Audit log rows are immutable")
 
 
 class MigrationLog(Base):

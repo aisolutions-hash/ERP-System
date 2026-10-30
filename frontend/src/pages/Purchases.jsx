@@ -783,7 +783,7 @@ export default function Purchases() {
       )}
 
       {showImport && (
-        <div className="modal-overlay" onClick={() => setShowImport(false)}>
+        <div className="modal-overlay">
           <div className="modal-panel p-5 max-w-lg" onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-bold mb-4">Import Purchase Orders</h3>
             <p className="text-sm text-gray-500 mb-4">

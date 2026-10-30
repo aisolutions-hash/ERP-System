@@ -322,6 +322,8 @@ def get_purchase(po_id: int, db: Annotated[Session, Depends(get_db)],
 def update_purchase(po_id: int, body: PurchaseOrderUpdate, db: Annotated[Session, Depends(get_db)],
                     user: ManagerOrAdmin):
     po = get_or_404(db, PurchaseOrder, po_id)
+    before = {k: getattr(po, k) for k in (
+        "po_number", "po_type", "supplier_id", "supplier_name", "supplier_address", "supplier_email")}
     if body.po_number is not None and body.po_number != po.po_number:
         po.po_number = body.po_number
 
@@ -364,10 +366,14 @@ def update_purchase(po_id: int, body: PurchaseOrderUpdate, db: Annotated[Session
             if body.supplier_email is not None:
                 po.supplier_email = body.supplier_email.strip()
 
-    apply_updates(po, body, exclude={"lines", "po_number", "supplier_id", "supplier_name",
-                                     "supplier_gstin", "supplier_address", "supplier_phone", "supplier_email"})
+    changes = apply_updates(po, body, exclude={"lines", "po_number", "supplier_id", "supplier_name",
+                                               "supplier_gstin", "supplier_address", "supplier_phone", "supplier_email"})
     if body.po_type is not None:
         po.po_type = target_type
+    for field, old in before.items():
+        new = getattr(po, field)
+        if old != new:
+            changes[field] = {"old": old, "new": new}
     affected = {po.prn_id} if po.prn_id else set()
     if body.lines is not None:
         affected |= affected_prn_ids(db, list(po.lines))
@@ -394,7 +400,8 @@ def update_purchase(po_id: int, body: PurchaseOrderUpdate, db: Annotated[Session
         affected |= affected_prn_ids(db, lines)
     db.commit()
     db.refresh(po)
-    write_audit(db, user, "UPDATE", "purchase_orders", po.id, f"Updated PO {po.po_number}")
+    write_audit(db, user, "UPDATE", "purchase_orders", po.id, f"Updated PO {po.po_number}",
+                changes=changes)
     transitions = sync_prn_fulfilment(db, affected)
     if transitions:
         db.commit()
@@ -647,7 +654,13 @@ async def import_purchases(
 
     for c in created:
         write_audit(db, user, "IMPORT", "purchase_orders", c["po_id"],
-                    f"Bulk-imported PO {c['po_number']} ({c['lines']} lines)")
+                    f"Bulk-imported PO {c['po_number']} ({c['lines']} lines)",
+                    created=1)
+    failed = len(skipped) + len(errors_rows)
+    if failed:
+        write_audit(db, user, "IMPORT", "purchase_orders", None,
+                    f"PO import: {len(created)} created, {failed} failed/skipped",
+                    failed=failed)
     batch.stats = json.dumps({
         "rows": len(parsed), "created": len(created), "skipped": len(skipped),
         "errors": len(errors_rows), "lines": line_count, "source": file.filename or "",

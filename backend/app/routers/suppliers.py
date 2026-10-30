@@ -94,10 +94,11 @@ def supplier_purchase_history(supplier_id: int, db: Annotated[Session, Depends(g
 def update_supplier(supplier_id: int, body: SupplierUpdate, db: Annotated[Session, Depends(get_db)],
                     user: ManagerOrAdmin):
     sup = get_or_404(db, Supplier, supplier_id)
-    apply_updates(sup, body)
+    changes = apply_updates(sup, body)
     db.commit()
     db.refresh(sup)
-    write_audit(db, user, "UPDATE", "suppliers", sup.id, f"Updated supplier {sup.name}")
+    write_audit(db, user, "UPDATE", "suppliers", sup.id, f"Updated supplier {sup.name}",
+                changes=changes)
     return sup
 
 

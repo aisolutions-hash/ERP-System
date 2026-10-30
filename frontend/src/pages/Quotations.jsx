@@ -63,6 +63,12 @@ const defaultTerms = (days = DEFAULT_PAYMENT_DAYS) => `1. Customer will be bille
 
 const PAYMENT_LINE_RE = /^.*Payment will be.*$/im
 
+// Number inputs change their value on mouse-wheel (Chrome/Firefox). Blur the
+// field on wheel so scrolling only scrolls the form. Keyboard editing is unaffected.
+const blurNumberOnWheel = (e) => {
+  if (e.target.type === 'number') e.target.blur()
+}
+
 function parsePaymentDays(terms) {
   const m = String(terms || '').match(/Payment will be\s+(\d+)\s+days/i)
   return m ? Number(m[1]) : null
@@ -776,7 +782,7 @@ export default function Quotations() {
               <button onClick={() => save(form.status)} className="btn btn-primary" disabled={formBusy}>{formBusy ? 'Saving…' : (form.id ? 'Save Changes' : 'Save Quotation')}</button>
             </div>
           }>
-          <div className="max-h-[70vh] overflow-y-auto pr-1 space-y-6">
+          <div className="max-h-[70vh] overflow-y-auto pr-1 space-y-6" onWheel={blurNumberOnWheel}>
             {/* Section A: Customer */}
             <div>
               <SectionHeader title="A. Customer / Client" />

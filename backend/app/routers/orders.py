@@ -570,7 +570,8 @@ def _create_orders_from_rows(db: Session, rows: list[dict], user: AllStaff):
             "order_date": o.order_date.isoformat(),
         })
         write_audit(db, user, "IMPORT", "sales_orders", o.id,
-                    f"Bulk-imported {o.order_type.value} order {o.order_no} ({len(lines)} lines)")
+                    f"Bulk-imported {o.order_type.value} order {o.order_no} ({len(lines)} lines)",
+                    created=1)
 
     sync_purchase_shortages(db)
     return created, skipped
@@ -788,9 +789,10 @@ def update_order_line(line_id: int, body: SalesOrderLineUpdate,
 def update_order(order_id: int, body: SalesOrderUpdate, db: Annotated[Session, Depends(get_db)],
                  user: AllStaff):
     o = get_or_404(db, SalesOrder, order_id)
+    before = {k: getattr(o, k) for k in ("so_no", "customer_id", "customer_name", "salesperson_id")}
     if "order_no" in body.model_fields_set and not (body.order_no or "").strip():
         raise HTTPException(status_code=400, detail="SO Number is required and cannot be blank")
-    apply_updates(o, body, exclude={"lines"})
+    changes = apply_updates(o, body, exclude={"lines"})
     if "order_no" in body.model_fields_set:
         o.so_no = (body.order_no or "").strip()[:120]
     if (body.customer_name or "").strip():
@@ -815,9 +817,14 @@ def update_order(order_id: int, body: SalesOrderUpdate, db: Annotated[Session, D
         lines = [SalesOrderLine(**ln.model_dump()) for ln in body.lines]
         o.lines = lines
         _recalc_total(o, lines)
+    for field, old in before.items():
+        new = getattr(o, field)
+        if old != new:
+            changes[field] = {"old": old, "new": new}
     db.commit()
     db.refresh(o)
-    write_audit(db, user, "UPDATE", "sales_orders", o.id, f"Updated order {o.order_no}")
+    write_audit(db, user, "UPDATE", "sales_orders", o.id, f"Updated order {o.order_no}",
+                changes=changes)
     sync_purchase_shortages(db)
     return _serialize_order(db, o)
 
@@ -826,10 +833,12 @@ def update_order(order_id: int, body: SalesOrderUpdate, db: Annotated[Session, D
 def set_order_status(order_id: int, order_status: OrderStatus,
                      db: Annotated[Session, Depends(get_db)], user: AllStaff):
     o = get_or_404(db, SalesOrder, order_id)
+    old = o.status.value if o.status else ""
     o.status = order_status
     db.commit()
     db.refresh(o)
-    write_audit(db, user, "STATUS", "sales_orders", o.id, f"Order {o.order_no} -> {order_status.value}")
+    write_audit(db, user, "STATUS", "sales_orders", o.id, f"Order {o.order_no} -> {order_status.value}",
+                changes={"status": {"old": old, "new": order_status.value}})
     sync_purchase_shortages(db)
     return _serialize_order(db, o)
 
@@ -929,6 +938,11 @@ async def import_orders(
 
     created, skipped = _create_orders_from_rows(db, valid, user)
     db.commit()
+    failed = len(skipped) + len(preview["errors"])
+    if failed:
+        write_audit(db, user, "IMPORT", "sales_orders", None,
+                    f"Order import: {len(created)} created, {failed} failed/skipped",
+                    failed=failed)
     return {
         "summary": {
             "total_rows": preview["total_rows"],

@@ -447,23 +447,24 @@ def list_employees(
     page_size: int = Query(25, ge=1, le=500),
 ):
     status_filter = _validated_status(status_filter)
-    stmt = select(Employee)
+    base = select(Employee)
     if search:
         like = f"%{search}%"
-        stmt = stmt.where(or_(
+        base = base.where(or_(
             Employee.employee_code.ilike(like), Employee.name.ilike(like),
             Employee.mobile.ilike(like), Employee.email.ilike(like),
         ))
     if department:
-        stmt = stmt.where(Employee.department == department)
+        base = base.where(Employee.department == department)
     if designation:
-        stmt = stmt.where(Employee.designation == designation)
+        base = base.where(Employee.designation == designation)
+    stmt = base
     if status_filter:
         stmt = stmt.where(Employee.status == status_filter)
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
     status_counts = {
         st.value: db.scalar(
-            select(func.count()).select_from(stmt.where(Employee.status == st).subquery())
+            select(func.count()).select_from(base.where(Employee.status == st).subquery())
         )
         for st in EmployeeStatus
     }
@@ -588,7 +589,8 @@ async def import_employees(
     db.commit()
     write_audit(db, user, "IMPORT", "employees", None,
                 f"Employee import: {imported} created, {updated} updated, "
-                f"{skipped} skipped, {len(errors)} row errors")
+                f"{skipped} skipped, {len(errors)} row errors",
+                created=imported, updated=updated, failed=len(errors))
     return {
         "filename": file.filename or "",
         "summary": {"total": len(parsed), "imported": imported, "updated": updated,

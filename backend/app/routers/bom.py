@@ -3,6 +3,8 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..auth import CurrentUser
+from ..crud import write_audit
 from ..database import get_db
 from ..models import BOM, BillOfMaterial, Product, ProductCategory
 from ..schemas import BOMCreate, BOMGroupIn, BOMUpdate
@@ -146,7 +148,8 @@ def get_bom_group(group_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/groups", status_code=201)
-def create_bom_group(body: BOMGroupIn, db: Session = Depends(get_db)):
+def create_bom_group(body: BOMGroupIn, user: CurrentUser,
+                     db: Session = Depends(get_db)):
     code = (body.bom_code or "").strip().upper()
     if not code:
         raise HTTPException(400, "BOM Code is required")
@@ -195,11 +198,14 @@ def create_bom_group(body: BOMGroupIn, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(400, "Duplicate raw material line for this product/version")
     db.refresh(bom)
+    write_audit(db, user, "CREATE", "boms", bom.id,
+                f"Created BOM {bom.bom_code}", created=1)
     return _serialize_group(db, bom)
 
 
 @router.put("/groups/{group_id}")
-def update_bom_group(group_id: int, body: BOMGroupIn, db: Session = Depends(get_db)):
+def update_bom_group(group_id: int, body: BOMGroupIn, user: CurrentUser,
+                     db: Session = Depends(get_db)):
     bom = db.get(BOM, group_id)
     if not bom:
         raise HTTPException(404, "BOM group not found")
@@ -254,11 +260,14 @@ def update_bom_group(group_id: int, body: BOMGroupIn, db: Session = Depends(get_
         db.rollback()
         raise HTTPException(400, "Duplicate raw material line for this product/version")
     db.refresh(bom)
+    write_audit(db, user, "UPDATE", "boms", bom.id,
+                f"Updated BOM {bom.bom_code}", updated=1)
     return _serialize_group(db, bom)
 
 
 @router.delete("/groups/{group_id}")
-def deactivate_bom_group(group_id: int, db: Session = Depends(get_db)):
+def deactivate_bom_group(group_id: int, user: CurrentUser,
+                         db: Session = Depends(get_db)):
     bom = db.get(BOM, group_id)
     if not bom:
         raise HTTPException(404, "BOM group not found")
@@ -266,6 +275,8 @@ def deactivate_bom_group(group_id: int, db: Session = Depends(get_db)):
     for l in db.query(BillOfMaterial).filter(BillOfMaterial.bom_id == bom.id).all():
         l.is_active = False
     db.commit()
+    write_audit(db, user, "DELETE", "boms", bom.id,
+                f"Deactivated BOM {bom.bom_code}")
     return {"message": "BOM group deactivated", "id": group_id}
 
 
@@ -298,7 +309,8 @@ def bom_for_product(product_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("", status_code=201)
-def create_bom(body: BOMCreate, db: Session = Depends(get_db)):
+def create_bom(body: BOMCreate, user: CurrentUser,
+               db: Session = Depends(get_db)):
     if body.product_id == body.raw_material_product_id:
         raise HTTPException(400, "Finished product and raw material cannot be the same")
     product = db.get(Product, body.product_id)
@@ -325,11 +337,14 @@ def create_bom(body: BOMCreate, db: Session = Depends(get_db)):
     db.add(bom)
     db.commit()
     db.refresh(bom)
+    write_audit(db, user, "CREATE", "bill_of_materials", bom.id,
+                "Created BOM line", created=1)
     return _bom_with_names(db, bom)
 
 
 @router.put("/{bom_id}")
-def update_bom(bom_id: int, body: BOMUpdate, db: Session = Depends(get_db)):
+def update_bom(bom_id: int, body: BOMUpdate, user: CurrentUser,
+               db: Session = Depends(get_db)):
     bom = db.get(BillOfMaterial, bom_id)
     if not bom:
         raise HTTPException(404, "BOM line not found")
@@ -363,23 +378,29 @@ def update_bom(bom_id: int, body: BOMUpdate, db: Session = Depends(get_db)):
         setattr(bom, k, v)
     db.commit()
     db.refresh(bom)
+    write_audit(db, user, "UPDATE", "bill_of_materials", bom.id,
+                "Updated BOM line", updated=1)
     return _bom_with_names(db, bom)
 
 
 @router.patch("/{bom_id}")
-def patch_bom(bom_id: int, body: BOMUpdate, db: Session = Depends(get_db)):
+def patch_bom(bom_id: int, body: BOMUpdate, user: CurrentUser,
+              db: Session = Depends(get_db)):
     """Alias for PUT - partial update."""
-    return update_bom(bom_id, body, db)
+    return update_bom(bom_id, body, user, db)
 
 
 @router.delete("/{bom_id}")
-def delete_bom(bom_id: int, db: Session = Depends(get_db)):
+def delete_bom(bom_id: int, user: CurrentUser,
+               db: Session = Depends(get_db)):
     """Soft-delete by deactivating."""
     bom = db.get(BillOfMaterial, bom_id)
     if not bom:
         raise HTTPException(404, "BOM line not found")
     bom.is_active = False
     db.commit()
+    write_audit(db, user, "DELETE", "bill_of_materials", bom_id,
+                "Deactivated BOM line")
     return {"message": "BOM line deactivated", "id": bom_id}
 
 

@@ -531,7 +531,12 @@ async def import_local_orders(
 
     for cr in created:
         write_audit(db, user, "IMPORT", "sales_orders", cr["order_id"],
-                    f"Bulk-imported LOCAL order {cr['order_no']} ({cr['lines']} lines)")
+                    f"Bulk-imported LOCAL order {cr['order_no']} ({cr['lines']} lines)",
+                    created=1)
+    if errors_rows:
+        write_audit(db, user, "IMPORT", "sales_orders", None,
+                    f"Local order import: {len(created)} created, {len(errors_rows)} failed",
+                    failed=len(errors_rows))
     batch.stats = json.dumps({
         "rows": len(parsed), "created": len(created), "skipped": 0,
         "errors": len(errors_rows), "lines": line_count, "source": file.filename or "",
