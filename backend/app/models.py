@@ -1227,3 +1227,41 @@ class PRNLine(Base):
     prn: Mapped[PRN] = relationship(back_populates="lines")
     material: Mapped[Product | None] = relationship()
     plant: Mapped[Plant | None] = relationship()
+
+
+class StandardSize(Base):
+    """Standard sheet/roll size master.
+
+    Kept separate from Product/Inventory; the optional product_id link only
+    references an existing item and never creates or edits one. Tare weights are
+    nullable because the source sheet leaves them unspecified; gross weight is
+    text so ranges such as "26-27" and units are preserved verbatim.
+    """
+
+    __tablename__ = "standard_sizes"
+    __table_args__ = (Index("ix_standard_sizes_size", "size_inches", "size_mm"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    size_inches: Mapped[float | None] = mapped_column(Float, nullable=True)
+    size_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    number_of_rolls: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tare_weight_6mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tare_weight_10mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tare_weight_12mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gross_weight: Mapped[str] = mapped_column(String(120), default="")
+    item_code: Mapped[str] = mapped_column(String(80), default="", index=True)
+    material_description: Mapped[str] = mapped_column(Text, default="")
+    paper_core_weight: Mapped[str] = mapped_column(String(120), default="")
+    status: Mapped[str] = mapped_column(String(30), default="Active", index=True)
+    remarks: Mapped[str] = mapped_column(Text, default="")
+    product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("products.id"), nullable=True, index=True
+    )
+    created_by: Mapped[str] = mapped_column(String(160), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_by: Mapped[str] = mapped_column(String(160), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    product: Mapped[Product | None] = relationship()

@@ -17,7 +17,7 @@ from .routers import (
     purchases, inventory, production, orders, dispatch, plans, dashboard, reports,
     requirements, salespersons, local_orders, bom, alerts,
     material_requirements, fulfilment, stock_flow, quotations, packaging_lists,
-    employees, prns, activity_log,
+    employees, prns, activity_log, standard_sizes,
 )
 
 # Schema additions create_all cannot apply to pre-existing tables (idempotent ALTER).
@@ -443,6 +443,16 @@ def on_startup():
         log.info("Column migrations applied.")
     except Exception as exc:
         log.error("column migration failed (recoverable): %s", exc)
+    # Standard Size Master: one-time seed from the bundled workbook. A master
+    # that already has records is never touched (idempotent, no duplicates).
+    try:
+        from .database import SessionLocal
+        from .services.standard_sizes import seed_standard_sizes
+        with SessionLocal() as s:
+            result = seed_standard_sizes(s)
+        log.info("Standard size seed: %s", result)
+    except Exception as exc:
+        log.error("standard size seed failed (recoverable): %s", exc)
     # Legacy NOT NULL product columns must have defaults for lazy product creation.
     try:
         _ensure_product_legacy_defaults()
@@ -551,6 +561,7 @@ app.include_router(packaging_lists.router)
 app.include_router(employees.router)
 app.include_router(prns.router)
 app.include_router(activity_log.router)
+app.include_router(standard_sizes.router)
 
 
 # Serve the built React app in production mode (frontend/dist mounted next to backend).

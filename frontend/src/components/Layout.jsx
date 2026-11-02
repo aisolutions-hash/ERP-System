@@ -5,7 +5,7 @@ import {
   Truck, Users, Package, FileDown, ShieldCheck, LogOut, ListChecks,
   AlertTriangle, Store, BellRing, ClipboardList, GitBranch, LayoutGrid,
   ChevronsLeft, ChevronsRight, Menu, X, Layers, ArrowLeftRight, FileSpreadsheet, PackagePlus,
-  FileText, Briefcase, ClipboardCheck, History,
+  FileText, Briefcase, ClipboardCheck, History, Ruler,
 } from 'lucide-react'
 import api from '../lib/api'
 import { useAuth } from '../context/AuthContext'
@@ -38,6 +38,7 @@ const SECTIONS = [
     items: [
       { to: '/raw-materials', label: 'Raw Materials', icon: Boxes },
       { to: '/inventory', label: 'Inventory', icon: Warehouse },
+      { to: '/standard-sizes', label: 'Standard Size Master', icon: Ruler },
       { to: '/stock-movements', label: 'Stock Movements', icon: ArrowLeftRight },
     ],
   },
@@ -85,6 +86,7 @@ const TITLE_MAP = {
   '/pending-po': { title: 'Pending PO', sub: 'Order fulfilment ledger' },
   '/raw-materials': { title: 'Raw Materials', sub: 'Polymer position & balances' },
   '/inventory': { title: 'Inventory', sub: 'Stock levels & status' },
+  '/standard-sizes': { title: 'Standard Size Master', sub: 'Operations - Standard sizes & core specifications' },
   '/stock-movements': { title: 'Stock Movements', sub: 'Every stock transaction' },
   '/purchases': { title: 'Purchases', sub: 'Purchase orders' },
   '/prn': { title: 'Purchase Requisition Note', sub: 'Material purchase requirements' },

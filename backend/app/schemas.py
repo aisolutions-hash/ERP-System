@@ -1425,3 +1425,56 @@ class PRNFulfillmentIn(BaseModel):
     fulfillment_status: Literal["Pending", "Partially Fulfilled", "Completed"]
     purchase_reference: str = Field(default="", max_length=120)
     purchase_remarks: str = Field(default="", max_length=4000)
+
+
+# ------------------------- Standard Size Master -------------------------
+class StandardSizeBase(BaseModel):
+    size_inches: Optional[float] = Field(default=None, ge=0)
+    size_mm: Optional[float] = Field(default=None, ge=0)
+    number_of_rolls: Optional[int] = Field(default=None, ge=0)
+    tare_weight_6mm: Optional[float] = Field(default=None, ge=0)
+    tare_weight_10mm: Optional[float] = Field(default=None, ge=0)
+    tare_weight_12mm: Optional[float] = Field(default=None, ge=0)
+    gross_weight: str = Field(default="", max_length=120)
+    item_code: str = Field(default="", max_length=80)
+    material_description: str = Field(default="", max_length=4000)
+    paper_core_weight: str = Field(default="", max_length=120)
+    status: Literal["Active", "Inactive"] = "Active"
+    remarks: str = Field(default="", max_length=4000)
+    product_id: Optional[int] = None
+
+
+class StandardSizeCreate(StandardSizeBase):
+    confirm_duplicate: bool = False
+
+    @model_validator(mode="after")
+    def _require_size(self):
+        if self.size_inches is None and self.size_mm is None:
+            raise ValueError("Enter at least one of Size in Inches or Size in MM")
+        return self
+
+
+class StandardSizeUpdate(BaseModel):
+    size_inches: Optional[float] = Field(default=None, ge=0)
+    size_mm: Optional[float] = Field(default=None, ge=0)
+    number_of_rolls: Optional[int] = Field(default=None, ge=0)
+    tare_weight_6mm: Optional[float] = Field(default=None, ge=0)
+    tare_weight_10mm: Optional[float] = Field(default=None, ge=0)
+    tare_weight_12mm: Optional[float] = Field(default=None, ge=0)
+    gross_weight: Optional[str] = Field(default=None, max_length=120)
+    item_code: Optional[str] = Field(default=None, max_length=80)
+    material_description: Optional[str] = Field(default=None, max_length=4000)
+    paper_core_weight: Optional[str] = Field(default=None, max_length=120)
+    status: Optional[Literal["Active", "Inactive"]] = None
+    remarks: Optional[str] = Field(default=None, max_length=4000)
+    product_id: Optional[int] = None
+    confirm_duplicate: bool = False
+
+
+class StandardSizeOut(StandardSizeBase, ORMModel):
+    id: int
+    created_by: str = ""
+    created_at: datetime
+    updated_by: str = ""
+    updated_at: datetime
+    product: Optional[ProductOut] = None
