@@ -2,18 +2,66 @@ import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Plus, Pencil, RefreshCw, CalendarClock, CalendarDays, Factory, BarChart3, Trash2, Download, Upload, Search,
+  Scale, PlugZap, Settings,
 } from 'lucide-react'
 import api, { downloadFile } from '../lib/api'
-import { PageHeader, Card, Modal, Loading, Empty, Badge, PageTabs, StatCard, SearchSelect } from '../components/ui'
+import { PageHeader, Card, Modal, Loading, Empty, Badge, StatCard, SearchSelect } from '../components/ui'
 import Table from '../components/Table'
 import { fmtNum, CompletionBar } from '../lib/format'
+import {
+  ProductionRecordsTab, ProductionSummaryTab, TareWeightSettingsTab, MachineIntegrationTab,
+} from '../components/ProductionRecords'
 
-const TABS = [
-  { key: 'production', label: 'Production', icon: <Factory size={15} /> },
-  { key: 'schedule', label: 'Monthly Schedule', icon: <CalendarClock size={15} /> },
-  { key: 'actual', label: 'Actual Production', icon: <CalendarDays size={15} /> },
-  { key: 'report', label: 'Production Report', icon: <BarChart3 size={15} /> },
+// Grouped section navigation — replaces the crowded single row of tabs.
+const NAV_GROUPS = [
+  {
+    label: 'Production Operations',
+    items: [
+      { key: 'production', label: 'Production', icon: <Factory size={15} /> },
+      { key: 'actual', label: 'Actual Production', icon: <CalendarDays size={15} /> },
+      { key: 'records', label: 'Production Records', icon: <Scale size={15} /> },
+    ],
+  },
+  {
+    label: 'Reports & Insights',
+    items: [
+      { key: 'summary', label: 'Production Summary', icon: <BarChart3 size={15} /> },
+    ],
+  },
+  {
+    label: 'Configuration',
+    items: [
+      { key: 'tare', label: 'Tare Weight Settings', icon: <Settings size={15} /> },
+      { key: 'machine', label: 'Machine Integration', icon: <PlugZap size={15} /> },
+    ],
+  },
 ]
+
+/** Grouped tab navigation reusing the app's existing .tab design language,
+ * with small section labels (like the sidebar groups in Layout). */
+function ProductionNav({ active, onChange }) {
+  return (
+    <div className="mb-5 border-b border-gray-100">
+      <div className="flex flex-wrap items-end gap-x-8 gap-y-1">
+        {NAV_GROUPS.map((group) => (
+          <div key={group.label} className="min-w-0">
+            <div className="px-2 pb-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-slate-400 select-none">
+              {group.label}
+            </div>
+            <div className="flex">
+              {group.items.map((t) => (
+                <button key={t.key} onClick={() => onChange(t.key)} className={`tab ${active === t.key ? 'active' : ''}`}>
+                  {t.icon}
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 const today = () => new Date().toISOString().slice(0, 10)
 const thisMonth = () => new Date().toISOString().slice(0, 7)
@@ -30,20 +78,18 @@ export default function Production() {
   const [productionOrders, setProductionOrders] = useState([])
   const [plans, setPlans] = useState([])
   const [actual, setActual] = useState([])
-  const [report, setReport] = useState(null)
   const [products, setProducts] = useState([])
   const [customers, setCustomers] = useState([])
   const [loading, setLoading] = useState(true)
-  const [reportLoading, setReportLoading] = useState(false)
 
   const [scheduleMonth, setScheduleMonth] = useState(thisMonth)
-  const [reportMonth, setReportMonth] = useState(thisMonth)
   const [actualFrom, setActualFrom] = useState('')
   const [actualTo, setActualTo] = useState('')
   const [actualProduct, setActualProduct] = useState('')
 
   const [showProdForm, setShowProdForm] = useState(false)
   const [prodForm, setProdForm] = useState({})
+  const [showScheduleManager, setShowScheduleManager] = useState(false)
   const [showScheduleForm, setShowScheduleForm] = useState(false)
   const [schedForm, setSchedForm] = useState({})
   const [showActualForm, setShowActualForm] = useState(false)
@@ -86,23 +132,16 @@ export default function Production() {
     },
   }).then((r) => setActual(r.data.items || [])).catch(() => setActual([]))
 
-  const loadReport = (month = reportMonth) => {
-    setReportLoading(true)
-    return api.get('/reports/production/monthly', { params: { month } })
-      .then((r) => setReport(r.data)).catch(() => setReport(null)).finally(() => setReportLoading(false))
-  }
-
   const load = () => {
     setLoading(true)
     return Promise.all([loadProductionOrders(), loadSchedules(), loadActual()]).finally(() => setLoading(false))
   }
 
   useEffect(() => { load(); loadProducts(); loadCustomers() }, [])
-  useEffect(() => { if (tab === 'schedule') loadSchedules() }, [tab, scheduleMonth])
+  useEffect(() => { if (showScheduleManager) loadSchedules() }, [showScheduleManager, scheduleMonth])
   useEffect(() => { if (tab === 'actual') loadActual() }, [tab, actualFrom, actualTo, actualProduct])
-  useEffect(() => { if (tab === 'report') loadReport() }, [tab, reportMonth])
 
-  // "Go to Production" from a Local Order: open the monthly schedule modal,
+  // "Go to Production" from a Local Order: open the monthly schedule form,
   // pre-filled from the order (product + qty + customer), already linked back to
   // the order so completing the schedule flows the finished goods to that order
   // automatically (existing Local Order status automation — unchanged).
@@ -124,7 +163,8 @@ export default function Production() {
           sales_order_id: o.id,
           remarks: `Local order ${o.order_no}`,
         })
-        setTab('schedule')
+        setTab('production')
+        setShowScheduleManager(true)
         setShowScheduleForm(true)
         setSearchParams({}, { replace: true })
       })
@@ -132,7 +172,7 @@ export default function Production() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const refreshAll = () => Promise.all([loadProductionOrders(), loadSchedules(), loadActual(), loadReport()])
+  const refreshAll = () => Promise.all([loadProductionOrders(), loadSchedules(), loadActual()])
 
   const runImportPreview = async (file) => {
     setImportBusy(true)
@@ -423,20 +463,6 @@ export default function Production() {
     )},
   ]
 
-  const reportDailyCols = [
-    { key: 'production_date', label: 'Date' },
-    { key: 'quantity', label: 'Production Qty', render: (r) => <span className="font-semibold tabular-nums">{fmtNum(r.quantity)}</span> },
-    { key: 'movements', label: 'Records', render: (r) => <span className="tabular-nums">{r.movements}</span> },
-  ]
-
-  const reportProductCols = [
-    { key: 'model', label: 'Model', render: (r) => <span className="font-medium">{r.model || '—'}</span> },
-    { key: 'item_code', label: 'Item Code', render: (r) => <span className="font-mono text-xs">{r.item_code || '—'}</span> },
-    { key: 'quantity', label: 'Total Qty', render: (r) => <span className="font-semibold tabular-nums">{fmtNum(r.quantity)}</span> },
-    { key: 'days', label: 'Days', render: (r) => <span className="tabular-nums">{r.days}</span> },
-    { key: 'movements', label: 'Records', render: (r) => <span className="tabular-nums">{r.movements}</span> },
-  ]
-
   const matchesSearch = (p) => {
     if (!search.trim()) return true
     const q = search.toLowerCase()
@@ -459,6 +485,10 @@ export default function Production() {
   const totalActual = actual.reduce((s, p) => s + (Number(p.quantity) || 0), 0)
 
   const renderTab = () => {
+    if (tab === 'records') return <ProductionRecordsTab products={products} />
+    if (tab === 'summary') return <ProductionSummaryTab products={products} />
+    if (tab === 'tare') return <TareWeightSettingsTab />
+    if (tab === 'machine') return <MachineIntegrationTab />
     if (tab === 'production') {
       return (
         <div className="space-y-4">
@@ -471,6 +501,7 @@ export default function Production() {
           <Card title="Production" subtitle="Schedule, production quantity, completion and balance by item"
             actions={
               <div className="flex items-center gap-2 flex-wrap">
+                <button onClick={() => { setShowScheduleManager(true) }} className="btn btn-secondary"><CalendarClock size={15} /> Monthly Schedule</button>
                 <button onClick={() => downloadFile('/production/report/orders/csv?scope=active', 'production_active.csv')} className="btn btn-secondary"><Download size={15} /> Download CSV</button>
                 <button onClick={() => downloadFile('/production/import/template', 'production_plan_template.csv')} className="btn btn-secondary"><Download size={15} /> Template</button>
                 <button onClick={() => { setImportFile(null); setImportPreview(null); setImportResult(null); setImportError(null); setShowImport(true) }} className="btn btn-secondary"><Upload size={15} /> Import Production Plan</button>
@@ -490,86 +521,29 @@ export default function Production() {
         </div>
       )
     }
-    if (tab === 'schedule') {
-      return (
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <StatCard label="Scheduled Records" value={plans.length} icon={CalendarClock} iconClass="bg-amber-50 text-amber-600" />
-            <StatCard label="Total Schedule Qty" value={fmtNum(totalScheduledPlans)} icon={Factory} iconClass="bg-violet-50 text-violet-600" />
-            <StatCard label="Models" value={new Set(plans.map((p) => p.model || p.product?.model || '').filter(Boolean)).size} icon={Factory} iconClass="bg-blue-50 text-blue-600" />
-          </div>
-          <Card title="Monthly Production Schedule" subtitle="Product / model schedule for the selected month"
-            actions={
-              <div className="flex items-center gap-2 flex-wrap">
-                <input type="month" value={scheduleMonth} onChange={(e) => setScheduleMonth(e.target.value)} className="input w-40" />
-                <button onClick={() => { setSchedForm({ plan_month: scheduleMonth, status: 'PENDING' }); setShowScheduleForm(true) }} className="btn btn-primary"><Plus size={15} /> Add Schedule</button>
-              </div>
-            }>
-            {loading ? <Loading /> : plans.length === 0
-              ? <Empty text="No production schedule for this month" />
-              : <Table columns={scheduleCols} data={plans} keyField="id" stickyColumns={['model']} />}
-          </Card>
-        </div>
-      )
-    }
-    if (tab === 'actual') {
-      return (
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <StatCard label="Daily Records" value={actual.length} icon={CalendarDays} iconClass="bg-violet-50 text-violet-600" />
-            <StatCard label="Total Actual Qty" value={fmtNum(totalActual)} icon={Factory} iconClass="bg-green-50 text-green-600" />
-            <StatCard label="Days Tracked" value={new Set(actual.map((p) => p.production_date)).size} icon={CalendarClock} iconClass="bg-cyan-50 text-cyan-600" />
-          </div>
-          <Card title="Actual Production (date-wise)" subtitle="Daily production output per item — the actual production entry ledger"
-            actions={
-              <div className="flex items-center gap-2 flex-wrap">
-                <select value={actualProduct} onChange={(e) => setActualProduct(e.target.value ? Number(e.target.value) : '')} className="input w-48">
-                  <option value="">All products</option>
-                  {products.map((p) => <option key={p.id} value={p.id}>{p.model}</option>)}
-                </select>
-                <input type="date" value={actualFrom} onChange={(e) => setActualFrom(e.target.value)} className="input w-40" />
-                <input type="date" value={actualTo} onChange={(e) => setActualTo(e.target.value)} className="input w-40" />
-                <button onClick={() => setShowActualForm(true)} className="btn btn-primary"><Plus size={15} /> Record Output</button>
-              </div>
-            }>
-            {loading ? <Loading /> : actual.length === 0
-              ? <Empty text="No actual output recorded" />
-              : <Table columns={actualCols} data={actual} keyField="id" stickyColumns={['model']} />}
-          </Card>
-        </div>
-      )
-    }
+    // tab === 'actual'
     return (
       <div className="space-y-4">
-        <Card title="Production Report" subtitle="Daily and monthly actual production output (DB-driven, from production movements)"
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <StatCard label="Daily Records" value={actual.length} icon={CalendarDays} iconClass="bg-violet-50 text-violet-600" />
+          <StatCard label="Total Actual Qty" value={fmtNum(totalActual)} icon={Factory} iconClass="bg-green-50 text-green-600" />
+          <StatCard label="Days Tracked" value={new Set(actual.map((p) => p.production_date)).size} icon={CalendarClock} iconClass="bg-cyan-50 text-cyan-600" />
+        </div>
+        <Card title="Actual Production (date-wise)" subtitle="Daily production output per item — the actual production entry ledger"
           actions={
             <div className="flex items-center gap-2 flex-wrap">
-              <input type="month" value={reportMonth} onChange={(e) => setReportMonth(e.target.value)} className="input w-40" />
-              <button onClick={() => downloadFile(reportMonth ? `/reports/production/monthly/csv?month=${reportMonth}` : '/reports/production/monthly/csv', 'monthly_production.csv')} className="btn btn-secondary"><Download size={15} /> CSV</button>
+              <select value={actualProduct} onChange={(e) => setActualProduct(e.target.value ? Number(e.target.value) : '')} className="input w-48">
+                <option value="">All products</option>
+                {products.map((p) => <option key={p.id} value={p.id}>{p.model}</option>)}
+              </select>
+              <input type="date" value={actualFrom} onChange={(e) => setActualFrom(e.target.value)} className="input w-40" />
+              <input type="date" value={actualTo} onChange={(e) => setActualTo(e.target.value)} className="input w-40" />
+              <button onClick={() => setShowActualForm(true)} className="btn btn-primary"><Plus size={15} /> Record Output</button>
             </div>
           }>
-          {reportLoading || !report ? <Loading /> : (
-            <>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-                <StatCard label="Monthly Total" value={fmtNum(report.totals.quantity)} icon={Factory} iconClass="bg-violet-50 text-violet-600" />
-                <StatCard label="Production Days" value={report.totals.days} icon={CalendarDays} iconClass="bg-green-50 text-green-600" />
-                <StatCard label="Products" value={report.totals.products} icon={Factory} iconClass="bg-blue-50 text-blue-600" />
-                <StatCard label="Output Records" value={report.totals.movements} icon={BarChart3} iconClass="bg-amber-50 text-amber-600" />
-              </div>
-              {report.items.length === 0 ? <Empty text="No actual production recorded for this month" /> : (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <div>
-                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Daily Total</div>
-                    <Table columns={reportDailyCols} data={report.by_date} keyField="production_date" dense />
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Item / Model Total</div>
-                    <Table columns={reportProductCols} data={report.by_product} keyField="product_id" dense />
-                  </div>
-                </div>
-              )}
-            </>
-          )}
+          {loading ? <Loading /> : actual.length === 0
+            ? <Empty text="No actual output recorded" />
+            : <Table columns={actualCols} data={actual} keyField="id" stickyColumns={['model']} />}
         </Card>
       </div>
     )
@@ -577,20 +551,46 @@ export default function Production() {
 
   return (
     <div className="animate-fade-in-up">
-      <PageHeader title="Production" subtitle="Production schedule, date-wise actual output and monthly production report"
+      <PageHeader title="Production" subtitle="Production plans, daily output, box-wise records, summaries and machine integration"
         actions={
           <div className="flex items-center gap-2 flex-wrap">
-            <div className="relative flex items-center">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none z-10" />
-              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search plans…" className="input sm:w-72 placeholder:text-slate-400" style={{ paddingLeft: '2.75rem' }} />
-            </div>
+            {tab === 'production' && (
+              <div className="relative flex items-center">
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none z-10" />
+                <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search plans…" className="input sm:w-72 placeholder:text-slate-400" style={{ paddingLeft: '2.75rem' }} />
+              </div>
+            )}
             <button onClick={refreshAll} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>
           </div>
         } />
 
-      <PageTabs tabs={TABS} active={tab} onChange={setTab} />
+      <ProductionNav active={tab} onChange={setTab} />
 
       {renderTab()}
+
+      {/* Monthly Schedule manager — the planning view previously shown as a tab,
+          preserved here (same /plans data, add/edit/delete, duplicate guard). */}
+      <Modal open={showScheduleManager && !showScheduleForm} title="Monthly Production Schedule"
+        subtitle="Product / model schedule by month — existing production plan records"
+        onClose={() => setShowScheduleManager(false)} xwide
+        footer={<>
+          <button onClick={() => setShowScheduleManager(false)} className="btn btn-secondary">Close</button>
+          <button onClick={() => { setSchedForm({ plan_month: scheduleMonth, status: 'PENDING' }); setShowScheduleForm(true) }} className="btn btn-primary"><Plus size={15} /> Add Schedule</button>
+        </>}>
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <input type="month" value={scheduleMonth} onChange={(e) => setScheduleMonth(e.target.value)} className="input w-40" />
+            <div className="flex items-center gap-4 text-xs text-slate-500 ml-auto">
+              <span>Records: <b className="text-slate-700">{plans.length}</b></span>
+              <span>Total Schedule Qty: <b className="text-slate-700 tabular-nums">{fmtNum(totalScheduledPlans)}</b></span>
+              <span>Models: <b className="text-slate-700">{new Set(plans.map((p) => p.model || p.product?.model || '').filter(Boolean)).size}</b></span>
+            </div>
+          </div>
+          {plans.length === 0
+            ? <Empty text="No production schedule for this month" />
+            : <Table columns={scheduleCols} data={plans} keyField="id" stickyColumns={['model']} />}
+        </div>
+      </Modal>
 
       {/* Production plan create/edit modal (schedule + date-wise quantity) */}
       <Modal open={showProdForm} title={prodForm.id ? 'Edit Production Plan' : 'New Production Plan'}
@@ -738,10 +738,10 @@ export default function Production() {
         )}
       </Modal>
 
-      {/* Monthly schedule modal (Plan) */}
+      {/* Monthly schedule form modal (Plan) */}
       <Modal open={showScheduleForm} title={schedForm.id ? 'Edit Monthly Schedule' : 'Add Monthly Schedule'}
         subtitle="Product / model monthly schedule — reuses the production plan records"
-        onClose={() => setShowScheduleForm(false)} wide
+        onClose={() => { setShowScheduleForm(false); if (searchParams.get('order')) setSearchParams({}, { replace: true }) }} wide
         footer={<>
           <button onClick={() => setShowScheduleForm(false)} className="btn btn-secondary">Cancel</button>
           <button onClick={saveSchedule} className="btn btn-primary">Save Schedule</button>

@@ -60,10 +60,18 @@ def get_current_user(
 
 
 def require_roles(*roles: UserRole | str):
+    """Gate an endpoint to the given roles.
+
+    NOTE: every role set used in this codebase already contains `admin`
+    (AdminUser / ManagerOrAdmin / AllStaff), so membership in `allowed` is the
+    only check needed. (A previous version also tested
+    `UserRole.admin.value not in allowed`, which made the condition vacuous
+    and let EVERY authenticated role — including viewer — through any gate.)
+    """
     allowed = {r.value if isinstance(r, UserRole) else r for r in roles}
 
     def dependency(user: Annotated[User, Depends(get_current_user)]) -> User:
-        if user.role.value not in allowed and UserRole.admin.value not in allowed:
+        if user.role.value not in allowed:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
         return user
 

@@ -14,7 +14,8 @@ from .database import Base, engine, check_db_health
 from . import models  # noqa: F401  (register models)
 from .routers import (
     auth, users, meta, customers, suppliers, products, plants, raw_materials,
-    purchases, inventory, production, orders, dispatch, plans, dashboard, reports,
+    purchases, inventory, production, production_records, orders, dispatch, plans,
+    dashboard, reports,
     requirements, salespersons, local_orders, bom, alerts,
     material_requirements, fulfilment, stock_flow, quotations, packaging_lists,
     employees, prns, activity_log, standard_sizes,
@@ -321,6 +322,22 @@ def _ensure_locations() -> None:
             log.info("Seeded internal locations: %s", _LOCATION_PLANTS)
 
 
+def _ensure_production_record_indexes() -> None:
+    """Exactly-once stock posting guard for box-wise Production Records.
+
+    Partial unique index: one stock_movements row per production record
+    (ref_type='production_record', ref_id=record.id). Additive and idempotent;
+    no existing movement rows use this ref_type, so no data is touched.
+    Postgres-only (SQLite tests rely on the service-level adopt-on-retry guard).
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_movements_production_record "
+            "ON stock_movements (ref_type, ref_id) WHERE ref_type = 'production_record'"))
+
+
 def _backfill_dispatch_line_schedules() -> None:
     """Derive product-wise schedule_qty for existing dispatch lines (idempotent).
 
@@ -499,6 +516,12 @@ def on_startup():
         log.info("Inventory uniqueness for Main Store enforced.")
     except Exception as exc:
         log.error("inventory uniqueness migration failed (recoverable): %s", exc)
+    # Production Records: exactly-once stock posting guard (partial unique
+    # index on stock_movements for ref_type='production_record'). Additive.
+    try:
+        _ensure_production_record_indexes()
+    except Exception as exc:
+        log.error("production record index migration failed (recoverable): %s", exc)
     # Reconcile purchase/production shortage requirements + alerts on boot so
     # the Alert Centre is current even for data imported or changed outside the
     # API. Dedupe-safe and non-fatal (best-effort).
@@ -540,6 +563,10 @@ app.include_router(plants.router)
 app.include_router(raw_materials.router)
 app.include_router(purchases.router)
 app.include_router(inventory.router)
+# production_records shares the /production prefix and MUST be registered first
+# so its static paths (/records, /settings/…, /machine/…) are matched before the
+# existing /production/{order_id} int-parameter routes.
+app.include_router(production_records.router)
 app.include_router(production.router)
 app.include_router(orders.router)
 app.include_router(dispatch.router)
