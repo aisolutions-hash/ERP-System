@@ -152,6 +152,10 @@ export function ProductionRecordsTab({ products }) {
       .catch((e) => alert('Delete failed: ' + (e.response?.data?.detail || e.message)))
   }
 
+  const setFilter = (patch) => setFilters((f) => ({ ...f, ...patch }))
+  const hasFilters = filters.search || filters.product_id || filters.size || filters.date_from || filters.date_to || filters.sync_status
+  const activeFilterCount = [filters.search, filters.product_id, filters.size, filters.date_from, filters.date_to, filters.sync_status].filter(Boolean).length
+
   const cols = [
     { key: 'production_date', label: 'Date', render: (r) => r.production_date || '—' },
     { key: 'box_number', label: 'Box No', render: (r) => <span className="font-semibold tabular-nums">{r.box_number}</span> },
@@ -168,7 +172,7 @@ export function ProductionRecordsTab({ products }) {
       <span title={r.inventory_sync_error || ''}><SyncBadge status={r.inventory_sync_status} /></span>
     )},
     { key: 'source', label: 'Source', render: (r) => <span className="text-xs text-slate-500">{r.source === 'SIMULATION' ? 'Simulation' : r.source === 'MANUAL' ? 'Manual' : r.source === 'MACHINE_API' ? 'Machine' : '—'}</span> },
-    { key: 'remark', label: 'Remark', render: (r) => <span className="text-slate-500 text-xs">{r.remark || '—'}</span> },
+    { key: 'remark', label: 'Remark', render: (r) => <span className="text-slate-500 text-xs max-w-[14rem] truncate block" title={r.remark || ''}>{r.remark || '—'}</span> },
     { key: 'actions', label: '', render: (r) => (
       <div className="flex items-center gap-0.5">
         {r.inventory_sync_status !== 'SYNCED' && canWrite && (
@@ -183,62 +187,111 @@ export function ProductionRecordsTab({ products }) {
 
   return (
     <div className="space-y-4">
+      {/* Overview */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard label="Total Boxes" value={summary ? fmtNum(summary.total_boxes) : '—'} icon={Scale} iconClass="bg-blue-50 text-blue-600" />
         <StatCard label="Total Gross Weight" value={summary ? fmtWt(summary.total_gross_weight) : '—'} icon={Scale} iconClass="bg-slate-100 text-slate-600" />
         <StatCard label="Total Tare Weight" value={summary ? fmtWt(summary.total_tare_weight) : '—'} icon={Scale} iconClass="bg-amber-50 text-amber-600" />
         <StatCard label="Total Net Weight" value={summary ? fmtWt(summary.total_net_weight) : '—'} icon={CheckCircle2} iconClass="bg-green-50 text-green-600" valueClass="text-green-600" />
       </div>
+
+      {/* Sync / attention status */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="rounded-xl border border-green-200 bg-green-50/70 px-4 py-3">
+          <div className="text-[0.6875rem] font-semibold uppercase tracking-wide text-green-700">Synced</div>
+          <div className="text-xl font-bold text-green-700 tabular-nums mt-0.5">{summary ? fmtNum(summary.synced) : '—'}</div>
+        </div>
+        <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3">
+          <div className="text-[0.6875rem] font-semibold uppercase tracking-wide text-amber-700">Pending Sync</div>
+          <div className="text-xl font-bold text-amber-700 tabular-nums mt-0.5">{summary ? fmtNum(summary.sync_pending) : '—'}</div>
+        </div>
+        <div className="rounded-xl border border-red-200 bg-red-50/70 px-4 py-3">
+          <div className="text-[0.6875rem] font-semibold uppercase tracking-wide text-red-700">Sync Failed</div>
+          <div className="text-xl font-bold text-red-700 tabular-nums mt-0.5">{summary ? fmtNum(summary.sync_failed) : '—'}</div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+          <div className="text-[0.6875rem] font-semibold uppercase tracking-wide text-slate-600">Tare Missing</div>
+          <div className="text-xl font-bold text-slate-700 tabular-nums mt-0.5">{summary ? fmtNum(summary.tare_missing) : '—'}</div>
+        </div>
+      </div>
+
       {summary && (summary.tare_missing > 0 || summary.sync_failed > 0) && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-4 py-2.5 text-sm flex items-start gap-2">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 mt-0.5" />
           <span>
-            {summary.tare_missing > 0 && <><b>{summary.tare_missing}</b> record(s) have no Tare Weight configured for their Size — Net Weight is not calculated. Configure it under <b>Tare Weight Settings</b>, then use Retry Sync. </>}
+            {summary.tare_missing > 0 && <><b>{summary.tare_missing}</b> record(s) missing tare (net not calculated). Configure in <b>Tare Weight Settings</b>, then Retry Sync. </>}
             {summary.sync_failed > 0 && <><b>{summary.sync_failed}</b> record(s) failed inventory posting — use Retry Sync.</>}
           </span>
         </div>
       )}
-      <Card title="Production Records" subtitle="Box-wise packing records received from the weighing machine (permanent)"
+
+      <Card title="Box-wise Production Records" subtitle="Permanent packing records from weighing machine, simulation, or manual entry"
         actions={
           <div className="flex items-center gap-2 flex-wrap">
-            <button onClick={() => downloadFile(`/production/records/report/csv${buildQuery(filters)}`, 'production_records.csv')} className="btn btn-secondary"><Download size={15} /> CSV</button>
+            <button onClick={() => downloadFile(`/production/records/report/csv${buildQuery(filters)}`, 'production_records.csv')} className="btn btn-secondary"><Download size={15} /> Export CSV</button>
             <button onClick={load} className="btn btn-secondary"><RefreshCw size={15} /> Refresh</button>
             {canWrite && <button onClick={openNew} className="btn btn-primary"><Plus size={15} /> New Record</button>}
           </div>
         }>
-        <div className="flex items-center gap-2 flex-wrap mb-4">
-          <div className="relative flex items-center">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none z-10" />
-            <input value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} placeholder="Search box / barcode / product…" className="input sm:w-64 placeholder:text-slate-400" style={{ paddingLeft: '2.5rem' }} />
+        {/* Filters */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Filters</div>
+            <div className="flex items-center gap-2">
+              {hasFilters && <span className="text-xs text-slate-500">{activeFilterCount} active</span>}
+              {hasFilters && <button onClick={() => setFilters(EMPTY_FILTERS)} className="btn btn-secondary btn-sm">Clear all</button>}
+            </div>
           </div>
-          <select value={filters.product_id} onChange={(e) => setFilters({ ...filters, product_id: e.target.value ? Number(e.target.value) : '' })} className="input w-44">
-            <option value="">All products</option>
-            {products.map((p) => <option key={p.id} value={p.id}>{p.model}</option>)}
-          </select>
-          <select value={filters.size} onChange={(e) => setFilters({ ...filters, size: e.target.value })} className="input w-36">
-            <option value="">All sizes</option>
-            {sizes.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <input type="date" value={filters.date_from} onChange={(e) => setFilters({ ...filters, date_from: e.target.value })} className="input w-40" title="From date" />
-          <input type="date" value={filters.date_to} onChange={(e) => setFilters({ ...filters, date_to: e.target.value })} className="input w-40" title="To date" />
-          <select value={filters.sync_status} onChange={(e) => setFilters({ ...filters, sync_status: e.target.value })} className="input w-40">
-            <option value="">All sync states</option>
-            <option value="SYNCED">Synced</option>
-            <option value="PENDING">Pending</option>
-            <option value="FAILED">Failed</option>
-          </select>
-          {(filters.search || filters.product_id || filters.size || filters.grade || filters.date_from || filters.date_to || filters.sync_status) && (
-            <button onClick={() => setFilters(EMPTY_FILTERS)} className="btn btn-secondary btn-sm">Clear</button>
-          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+            <div className="xl:col-span-2">
+              <label className="block text-xs text-slate-500 mb-1">Search</label>
+              <div className="relative flex items-center">
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none z-10" />
+                <input value={filters.search} onChange={(e) => setFilter({ search: e.target.value })} placeholder="Box no, barcode, product…" className="input w-full placeholder:text-slate-400" style={{ paddingLeft: '2.5rem' }} />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Product</label>
+              <select value={filters.product_id} onChange={(e) => setFilter({ product_id: e.target.value ? Number(e.target.value) : '' })} className="input w-full">
+                <option value="">All products</option>
+                {products.map((p) => <option key={p.id} value={p.id}>{p.model}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Size</label>
+              <select value={filters.size} onChange={(e) => setFilter({ size: e.target.value })} className="input w-full">
+                <option value="">All sizes</option>
+                {sizes.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Sync Status</label>
+              <select value={filters.sync_status} onChange={(e) => setFilter({ sync_status: e.target.value })} className="input w-full">
+                <option value="">All</option>
+                <option value="SYNCED">Synced</option>
+                <option value="PENDING">Pending</option>
+                <option value="FAILED">Failed</option>
+              </select>
+            </div>
+            <div className="xl:col-span-1 sm:col-span-2 lg:col-span-3 xl:col-span-6">
+              <label className="block text-xs text-slate-500 mb-1">Production Date Range</label>
+              <div className="flex items-center gap-2 flex-wrap">
+                <input type="date" value={filters.date_from} onChange={(e) => setFilter({ date_from: e.target.value })} className="input w-44" />
+                <span className="text-slate-400 text-xs">to</span>
+                <input type="date" value={filters.date_to} onChange={(e) => setFilter({ date_to: e.target.value })} className="input w-44" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Records table */}
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm font-semibold text-slate-700">Records</div>
+          <div className="text-xs text-slate-500">{loading ? 'Loading…' : `Showing ${items.length} of ${total} record(s)`}</div>
         </div>
         {loading ? <Loading /> : error ? <Empty text={error} /> : items.length === 0
-          ? <Empty text="No production records yet — records arrive from the weighing machine, simulation or manual entry" />
-          : (
-            <>
-              <Table columns={cols} data={items} keyField="id" stickyColumns={['product_name']} />
-              <div className="text-xs text-slate-400 mt-2">{total} record(s)</div>
-            </>
-          )}
+          ? <Empty text={hasFilters ? 'No records match the current filters.' : 'No production records yet — records arrive from the weighing machine, simulation or manual entry.'} />
+          : <Table columns={cols} data={items} keyField="id" stickyColumns={['product_name']} />}
       </Card>
 
       {/* Manual record entry modal */}
