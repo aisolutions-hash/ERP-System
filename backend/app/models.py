@@ -1105,7 +1105,7 @@ class QuotationLine(Base):
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
 
     item_code: Mapped[str] = mapped_column(String(120), default="")
-    description: Mapped[str] = mapped_column(String(500), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
     hsn_code: Mapped[str] = mapped_column(String(60), default="")
     quantity: Mapped[float] = mapped_column(Numeric(14, 3), default=0)
     uom: Mapped[str] = mapped_column(String(30), default="")

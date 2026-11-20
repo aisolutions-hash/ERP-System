@@ -1173,7 +1173,7 @@ class QuotationLineIn(BaseModel):
     id: Optional[int] = None
     product_id: Optional[int] = None
     item_code: str = ""
-    description: str = Field(min_length=1, max_length=500)
+    description: str = Field(min_length=1)
     hsn_code: str = ""
     quantity: float = Field(gt=0)
     uom: str = ""

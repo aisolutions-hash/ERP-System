@@ -338,6 +338,20 @@ def _ensure_production_record_indexes() -> None:
             "ON stock_movements (ref_type, ref_id) WHERE ref_type = 'production_record'"))
 
 
+def _ensure_quotation_description_text() -> None:
+    """Widen quotation_lines.description to TEXT so long product descriptions
+    are supported. Safe, additive, idempotent (ALTER TYPE to the same/wider type
+    preserves all existing data). Postgres-only; SQLite does not enforce varchar
+    lengths and new DBs get the correct schema from the model.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE quotation_lines ALTER COLUMN description TYPE TEXT"
+        ))
+
+
 def _backfill_dispatch_line_schedules() -> None:
     """Derive product-wise schedule_qty for existing dispatch lines (idempotent).
 
@@ -522,6 +536,12 @@ def on_startup():
         _ensure_production_record_indexes()
     except Exception as exc:
         log.error("production record index migration failed (recoverable): %s", exc)
+    # Quotation line descriptions: widen to TEXT to support long descriptions
+    # (additive, idempotent, preserves existing data).
+    try:
+        _ensure_quotation_description_text()
+    except Exception as exc:
+        log.error("quotation description migration failed (recoverable): %s", exc)
     # Reconcile purchase/production shortage requirements + alerts on boot so
     # the Alert Centre is current even for data imported or changed outside the
     # API. Dedupe-safe and non-fatal (best-effort).

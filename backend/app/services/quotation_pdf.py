@@ -194,6 +194,7 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
         fontSize=7,
         leading=9,
         wordWrap="CJK",
+        splitLongWords=1,
     )
     style_sign = ParagraphStyle(
         "Signatory",
@@ -260,7 +261,8 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
     headers = ["#", "Description", "HSN", "Qty", "UOM", "Price (INR)", "Lead Time", "Amount", "Tax"]
     rows = []
     for idx, ln in enumerate(q.lines, start=1):
-        desc = Paragraph(ln.description or "—", style_wrap)
+        desc_text = (ln.description or "—").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
+        desc = Paragraph(desc_text, style_wrap)
         rows.append([
             str(idx),
             desc,
@@ -277,6 +279,7 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
         line_table = Table(
             [headers] + rows,
             repeatRows=1,
+            splitByRow=1,
             colWidths=[
                 8 * mm, 52 * mm, 17 * mm, 12 * mm, 12 * mm,
                 24 * mm, 16 * mm, 24 * mm, 13 * mm,
@@ -290,9 +293,9 @@ def build_quotation_pdf_bytes(q: Quotation) -> bytes:
             ("FONTSIZE", (0, 1), (-1, -1), 7),
             ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
             ("ALIGN", (0, 0), (2, -1), "LEFT"),
-            ("ALIGN", (2, 0), (2, -1), "CENTER"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("GRID", (0, 0), (-1, -1), 0.75, colors.HexColor("#94a3b8")),
+        ("ALIGN", (2, 0), (2, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.75, colors.HexColor("#94a3b8")),
             ("LEFTPADDING", (0, 0), (-1, -1), 4),
             ("RIGHTPADDING", (0, 0), (-1, -1), 4),
             ("TOPPADDING", (0, 0), (-1, -1), 3),
