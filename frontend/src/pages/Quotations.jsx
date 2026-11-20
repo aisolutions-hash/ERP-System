@@ -111,6 +111,22 @@ function fmtNum(v) {
   return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+function formatApiError(detail, fallback = 'Something went wrong. Please try again.') {
+  if (!detail) return fallback
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    const msgs = detail.map((e) => {
+      const msg = e?.msg || e?.message || 'Invalid value'
+      const loc = Array.isArray(e?.loc) ? e.loc.filter((p) => p !== 'body') : []
+      const label = loc.length ? loc.join(' → ').replace(/_/g, ' ') : ''
+      return label ? `${label}: ${msg}` : String(msg)
+    }).filter(Boolean)
+    return msgs.length ? msgs.join('; ') : fallback
+  }
+  if (typeof detail === 'object' && detail.msg) return String(detail.msg)
+  return fallback
+}
+
 function statusBadge(status) {
   const s = STATUS_OPTIONS.find((o) => o.value === status)
   return <Badge className={s ? s.className : 'bg-slate-100 text-slate-600'}>{status || '—'}</Badge>
@@ -147,7 +163,7 @@ function buildQuotationHtml(q) {
   const lineRows = (q.lines || []).map((ln, i) => {
     return `<tr>
       <td style="padding:8px;border:1px solid #e2e8f0;text-align:center">${i + 1}</td>
-      <td style="padding:8px;border:1px solid #e2e8f0">${ln.description || '—'}</td>
+      <td style="padding:8px;border:1px solid #e2e8f0;white-space:pre-wrap;word-break:break-word">${ln.description || '—'}</td>
       <td style="padding:8px;border:1px solid #e2e8f0;text-align:center">${ln.hsn_code || '—'}</td>
       <td style="padding:8px;border:1px solid #e2e8f0;text-align:right">${fmtNum(ln.quantity)}</td>
       <td style="padding:8px;border:1px solid #e2e8f0;text-align:center">${ln.uom || '—'}</td>
@@ -529,8 +545,13 @@ export default function Quotations() {
       setFilterDateTo('')
       await load()
     } catch (e) {
+      const status = e.response?.status
       const detail = e.response?.data?.detail
-      setFormError(typeof detail === 'string' ? detail : (detail ? JSON.stringify(detail) : 'Save failed'))
+      if (status === 422) {
+        setFormError(formatApiError(detail, 'Please check the highlighted fields and try again.'))
+      } else {
+        setFormError(formatApiError(detail, 'Unable to save the quotation. Please try again.'))
+      }
     } finally {
       setFormBusy(false)
     }
@@ -741,7 +762,7 @@ export default function Quotations() {
             </div>
             <Table
               columns={[
-                { key: 'description', label: 'Description', render: (l) => <span className="font-medium">{l.description}</span> },
+                { key: 'description', label: 'Description', render: (l) => <span className="font-medium whitespace-pre-wrap break-words block max-w-md">{l.description}</span> },
                 { key: 'hsn_code', label: 'HSN' },
                 { key: 'quantity', label: 'Qty', render: (l) => fmtNum(l.quantity) },
                 { key: 'uom', label: 'UOM' },
@@ -844,7 +865,7 @@ export default function Quotations() {
                       <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
                         {form.quotation_type === 'Manufacturing' ? (
                           <div className="md:col-span-3">
-                            <label className="block text-xs text-slate-500 mb-1">Product *</label>
+                            <label className="block text-xs text-slate-500 mb-1">Product / Description *</label>
                             <SearchSelect
                               options={manufacturingOptions}
                               value={MANUFACTURING_PRODUCTS.includes(ln.description) ? ln.description : null}
@@ -852,11 +873,14 @@ export default function Quotations() {
                               placeholder="Search product…"
                               onChange={(id, manual) => setLineProduct(idx, id, manual)}
                             />
+                            {!MANUFACTURING_PRODUCTS.includes(ln.description) && ln.description && (
+                              <textarea rows={2} value={ln.description} onChange={(e) => setLine(idx, 'description', e.target.value)} className="input w-full resize-y mt-2" placeholder="Product / service description" />
+                            )}
                           </div>
                         ) : (
                           <div className="md:col-span-3">
                             <label className="block text-xs text-slate-500 mb-1">Description *</label>
-                            <input value={ln.description} onChange={(e) => setLine(idx, 'description', e.target.value)} className="input w-full" placeholder="Item description" />
+                            <textarea rows={3} value={ln.description} onChange={(e) => setLine(idx, 'description', e.target.value)} className="input w-full resize-y" placeholder="Item / service description" />
                           </div>
                         )}
                         <div className="md:col-span-2"><label className="block text-xs text-slate-500 mb-1">Item Code</label><input value={ln.item_code} onChange={(e) => setLine(idx, 'item_code', e.target.value)} className="input w-full" /></div>
